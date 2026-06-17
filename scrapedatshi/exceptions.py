@@ -21,12 +21,36 @@ class AuthError(ScrapedatshiError):
     """Raised when the API key is missing, invalid, or revoked (HTTP 401/403)."""
 
 
+class InsufficientCreditsError(ScrapedatshiError):
+    """
+    Raised when the account credit balance is too low to complete the request (HTTP 402).
+
+    Top up your balance at https://scrapedatshi.com/portal/billing.
+
+    Example::
+
+        from scrapedatshi.exceptions import InsufficientCreditsError
+
+        try:
+            result = client.pipeline.sync(...)
+        except InsufficientCreditsError:
+            print("Balance too low — top up at scrapedatshi.com/portal/billing")
+    """
+
+
 class RateLimitError(ScrapedatshiError):
-    """Raised when the user has exceeded their tier's rate or monthly limit (HTTP 429)."""
+    """Raised when a per-request hard cap or per-minute rate limit is exceeded (HTTP 429)."""
 
 
 class TierError(ScrapedatshiError):
-    """Raised when the requested feature is not available on the user's current tier (HTTP 403)."""
+    """
+    Raised when a request is rejected due to account restrictions (HTTP 403).
+
+    .. deprecated::
+        ``TierError`` is kept for backward compatibility. New code should catch
+        :class:`InsufficientCreditsError` for credit balance issues and
+        :class:`AuthError` for permission errors.
+    """
 
 
 class ValidationError(ScrapedatshiError):

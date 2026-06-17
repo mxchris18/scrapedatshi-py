@@ -25,6 +25,7 @@ import httpx
 
 from scrapedatshi.exceptions import (
     AuthError,
+    InsufficientCreditsError,
     RateLimitError,
     ScrapedatshiError,
     ServerError,
@@ -212,6 +213,13 @@ def _handle_response(response: httpx.Response) -> dict[str, Any]:
         detail = response.text
 
     status = response.status_code
+
+    if status == 402:
+        raise InsufficientCreditsError(
+            detail
+            or "Insufficient credits. Top up at scrapedatshi.com/portal/billing.",
+            status_code=status,
+        )
 
     if status in (401, 403):
         # Distinguish tier errors from auth errors

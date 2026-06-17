@@ -5,6 +5,9 @@ Pydantic response models for all scrapedatshi API endpoints.
 
 All models use strict typing so IDEs can provide full IntelliSense
 autocomplete on response objects.
+
+Every response includes ``credits_used`` and ``credits_remaining`` fields
+so you can track spend programmatically without hitting the billing API.
 """
 
 from __future__ import annotations
@@ -48,6 +51,7 @@ class ChunkResult(BaseModel):
         result = client.pipeline.chunk_url("https://docs.example.com")
         for chunk in result.chunks:
             print(chunk.content)
+        print(f"Cost: ${result.credits_used:.4f} | Remaining: ${result.credits_remaining:.4f}")
     """
 
     chunks: list[Chunk] = Field(
@@ -61,12 +65,27 @@ class ChunkResult(BaseModel):
         False,
         description="Whether Contextual Retrieval (RAG 2.0) was applied to enrich chunks.",
     )
+    content_truncated: bool = Field(
+        False,
+        description=(
+            "True if the source content exceeded the maximum content size (~75,000 words) "
+            "and was automatically truncated before chunking."
+        ),
+    )
+    credits_used: float = Field(
+        0.0,
+        description="Credits deducted for this request (URL fetch fee + chunk fee).",
+    )
+    credits_remaining: float = Field(
+        0.0,
+        description="Account credit balance after this request.",
+    )
 
     def __len__(self) -> int:
         return self.total_chunks
 
     def __repr__(self) -> str:
-        return f"ChunkResult(total_chunks={self.total_chunks}, source={self.source!r})"
+        return f"ChunkResult(total_chunks={self.total_chunks}, source={self.source!r}, credits_used={self.credits_used:.4f})"
 
 
 class CrawlChunkResult(BaseModel):
@@ -78,6 +97,7 @@ class CrawlChunkResult(BaseModel):
 
         result = client.pipeline.crawl("https://example.com/sitemap.xml", max_pages=10)
         print(f"Crawled {result.pages_crawled} pages → {result.total_chunks} chunks")
+        print(f"Cost: ${result.credits_used:.4f} | Remaining: ${result.credits_remaining:.4f}")
     """
 
     chunks: list[Chunk] = Field(..., description="All chunks from all crawled pages.")
@@ -89,6 +109,14 @@ class CrawlChunkResult(BaseModel):
         ..., description="The root URL or sitemap URL that was crawled."
     )
     contextual_retrieval_used: bool = Field(False)
+    credits_used: float = Field(
+        0.0,
+        description="Credits deducted for this request (URL fetch fees + chunk fees).",
+    )
+    credits_remaining: float = Field(
+        0.0,
+        description="Account credit balance after this request.",
+    )
 
     def __len__(self) -> int:
         return self.total_chunks
@@ -96,7 +124,8 @@ class CrawlChunkResult(BaseModel):
     def __repr__(self) -> str:
         return (
             f"CrawlChunkResult(pages={self.pages_crawled}, "
-            f"total_chunks={self.total_chunks}, source={self.source_url!r})"
+            f"total_chunks={self.total_chunks}, source={self.source_url!r}, "
+            f"credits_used={self.credits_used:.4f})"
         )
 
 
@@ -118,6 +147,7 @@ class SyncResult(BaseModel):
             index_name="my-index",
         )
         print(f"Upserted {result.vectors_upserted} vectors")
+        print(f"Cost: ${result.credits_used:.4f} | Remaining: ${result.credits_remaining:.4f}")
     """
 
     status: str = Field(..., description="'success' or 'error'.")
@@ -135,11 +165,20 @@ class SyncResult(BaseModel):
         ..., description="Vector DB provider used (e.g. 'pinecone')."
     )
     contextual_retrieval_used: bool = Field(False)
+    credits_used: float = Field(
+        0.0,
+        description="Credits deducted for this request (URL fetch + chunk fees + injection fees).",
+    )
+    credits_remaining: float = Field(
+        0.0,
+        description="Account credit balance after this request.",
+    )
 
     def __repr__(self) -> str:
         return (
             f"SyncResult(status={self.status!r}, chunks={self.chunks_created}, "
-            f"vectors={self.vectors_upserted}, tokens={self.total_tokens})"
+            f"vectors={self.vectors_upserted}, tokens={self.total_tokens}, "
+            f"credits_used={self.credits_used:.4f})"
         )
 
 
@@ -157,6 +196,7 @@ class IngestResult(BaseModel):
             vector_db_api_key="...",
             index_name="my-index",
         )
+        print(f"Cost: ${result.credits_used:.4f} | Remaining: ${result.credits_remaining:.4f}")
     """
 
     status: str
@@ -167,9 +207,18 @@ class IngestResult(BaseModel):
     vector_db_provider: str
     filename: str = Field("", description="Original filename that was ingested.")
     contextual_retrieval_used: bool = Field(False)
+    credits_used: float = Field(
+        0.0,
+        description="Credits deducted for this request (file parse + chunk fees + injection fees).",
+    )
+    credits_remaining: float = Field(
+        0.0,
+        description="Account credit balance after this request.",
+    )
 
     def __repr__(self) -> str:
         return (
             f"IngestResult(status={self.status!r}, file={self.filename!r}, "
-            f"chunks={self.chunks_created}, vectors={self.vectors_upserted})"
+            f"chunks={self.chunks_created}, vectors={self.vectors_upserted}, "
+            f"credits_used={self.credits_used:.4f})"
         )

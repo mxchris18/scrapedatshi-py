@@ -23,10 +23,11 @@ from scrapedatshi import ScrapedatshiClient
 
 client = ScrapedatshiClient(api_key="sds_...")
 
-# Chunk a URL to JSON (all tiers — no embedding required)
+# Chunk a URL to JSON (no embedding required)
 result = client.pipeline.chunk_url("https://docs.example.com")
 
 print(f"Got {result.total_chunks} chunks")
+print(f"Cost: ${result.credits_used:.4f} | Remaining: ${result.credits_remaining:.4f}")
 for chunk in result.chunks:
     print(chunk.content[:80])
 ```
@@ -50,12 +51,32 @@ client = ScrapedatshiClient()
 ```
 
 Get your API key at [scrapedatshi.com/portal/register](https://scrapedatshi.com/portal/register).
+New accounts receive **$1.00 free credits** — no credit card required.
+
+---
+
+## Pricing
+
+scrapedatshi uses a **pay-per-use credit wallet** — no subscriptions, no monthly fees.
+Credits are deducted after each successful API call. Failed requests are never charged.
+
+| Operation | Rate | Applies To |
+|---|---|---|
+| URL Fetch | $0.0020 / URL | `/v1/rag-chunk`, `/v1/crawl`, `/v1/crawl-chunk`, `/v1/sync`, `/v1/ingest` |
+| Spider Fetch | $0.0050 / URL | `/v1/spider` (replaces URL fetch) |
+| Chunk Fee | $0.0005 / chunk | All routes — per chunk generated |
+| Injection Fee | $0.0030 / chunk | `/v1/sync`, `/v1/ingest` — per chunk upserted to vector DB |
+| Contextual Retrieval | $0.0030 / URL | When `contextual_retrieval=True` |
+
+**Example:** `sync()` on 1 URL → 10 chunks = $0.0020 + (10 × $0.0005) + (10 × $0.0030) = **$0.0370**
+
+Top up your balance at [scrapedatshi.com/portal/billing](https://scrapedatshi.com/portal/billing).
 
 ---
 
 ## Pipeline Methods
 
-### Chunk to JSON (all tiers)
+### Chunk to JSON
 
 No embedding or vector DB required. Returns structured JSON chunks from any source.
 
@@ -64,9 +85,12 @@ No embedding or vector DB required. Returns structured JSON chunks from any sour
 ```python
 result = client.pipeline.chunk_url("https://docs.example.com")
 
-# result.chunks       → list[Chunk]
-# result.total_chunks → int
-# result.source       → str (the URL)
+# result.chunks              → list[Chunk]
+# result.total_chunks        → int
+# result.source              → str (the URL)
+# result.credits_used        → float
+# result.credits_remaining   → float
+# result.content_truncated   → bool (True if content exceeded ~75,000 words)
 ```
 
 #### Chunk a local file
@@ -77,9 +101,10 @@ Supports PDF, DOCX, TXT, MD, and HTML.
 result = client.pipeline.chunk_file("./docs/manual.pdf")
 
 print(f"Got {result.total_chunks} chunks from {result.source}")
+print(f"Cost: ${result.credits_used:.4f}")
 ```
 
-#### Crawl a website (Basic tier+)
+#### Crawl a website
 
 Crawls via sitemap and chunks all pages.
 
@@ -87,11 +112,12 @@ Crawls via sitemap and chunks all pages.
 result = client.pipeline.crawl("https://example.com", max_pages=10)
 
 print(f"Crawled {result.pages_crawled} pages → {result.total_chunks} chunks")
+print(f"Cost: ${result.credits_used:.4f}")
 ```
 
 ---
 
-### Full Pipeline — Embed + Inject (Pro/Enterprise)
+### Full Pipeline — Embed + Inject
 
 Scrape, embed, and inject directly into your vector database in one call.
 
@@ -108,6 +134,7 @@ result = client.pipeline.sync(
 )
 
 print(f"Upserted {result.vectors_upserted} vectors ({result.total_tokens} tokens)")
+print(f"Cost: ${result.credits_used:.4f}")
 ```
 
 #### Ingest a local file
@@ -125,9 +152,11 @@ result = client.pipeline.ingest(
 
 ---
 
-### Contextual Retrieval (RAG 2.0) — Basic tier+
+### Contextual Retrieval (RAG 2.0)
 
 Prepend an LLM-generated document summary to every chunk before embedding, dramatically improving retrieval accuracy.
+
+Additional cost: $0.0030 per URL when `contextual_retrieval=True`.
 
 ```python
 result = client.pipeline.chunk_url(
@@ -154,7 +183,7 @@ from scrapedatshi import ScrapedatshiClient
 async def main():
     async with ScrapedatshiClient(api_key="sds_...") as client:
         result = await client.pipeline.chunk_url_async("https://docs.example.com")
-        print(f"Got {result.total_chunks} chunks")
+        print(f"Got {result.total_chunks} chunks — cost ${result.credits_used:.4f}")
 
 asyncio.run(main())
 ```
@@ -173,7 +202,8 @@ async def main():
             *[client.pipeline.chunk_url_async(url) for url in urls]
         )
         total = sum(r.total_chunks for r in results)
-        print(f"Processed {len(urls)} URLs → {total} total chunks")
+        total_cost = sum(r.credits_used for r in results)
+        print(f"Processed {len(urls)} URLs → {total} total chunks — total cost ${total_cost:.4f}")
 ```
 
 ---
@@ -181,14 +211,18 @@ async def main():
 ## Response Models
 
 All methods return typed Pydantic models with full IDE autocomplete support.
+Every response includes `credits_used` and `credits_remaining` for programmatic spend tracking.
 
 ### `ChunkResult`
 
 ```python
-result.chunks              # list[Chunk]
-result.total_chunks        # int
-result.source              # str
+result.chunks                  # list[Chunk]
+result.total_chunks            # int
+result.source                  # str
 result.contextual_retrieval_used  # bool
+result.content_truncated       # bool — True if content exceeded ~75,000 words
+result.credits_used            # float — credits deducted for this request
+result.credits_remaining       # float — account balance after this request
 ```
 
 ### `Chunk`
@@ -206,17 +240,21 @@ result.chunks              # list[Chunk]
 result.total_chunks        # int
 result.pages_crawled       # int
 result.source_url          # str
+result.credits_used        # float
+result.credits_remaining   # float
 ```
 
 ### `SyncResult` / `IngestResult`
 
 ```python
-result.status              # "success" | "error"
+result.status              # "success" | "partial" | "error"
 result.chunks_created      # int
 result.vectors_upserted    # int
 result.total_tokens        # int
 result.embedding_provider  # str
 result.vector_db_provider  # str
+result.credits_used        # float
+result.credits_remaining   # float
 ```
 
 ---
@@ -225,13 +263,13 @@ result.vector_db_provider  # str
 
 ```python
 from scrapedatshi.exceptions import (
-    AuthError,        # Invalid or missing API key (401/403)
-    TierError,        # Feature not available on your plan (403)
-    RateLimitError,   # Monthly or per-minute limit exceeded (429)
-    ValidationError,  # Bad request payload (422)
-    ServerError,      # API server error (5xx)
-    TimeoutError,     # Request timed out
-    ScrapedatshiError # Base exception — catch-all
+    AuthError,              # Invalid or missing API key (401/403)
+    InsufficientCreditsError,  # Balance too low — top up at portal/billing (402)
+    RateLimitError,         # Per-request hard cap or rate limit exceeded (429)
+    ValidationError,        # Bad request payload (422)
+    ServerError,            # API server error (5xx)
+    TimeoutError,           # Request timed out
+    ScrapedatshiError       # Base exception — catch-all
 )
 
 try:
@@ -243,8 +281,8 @@ try:
         vector_db_api_key="pc-...",
         index_name="my-docs",
     )
-except TierError as e:
-    print(f"Upgrade required: {e.message}")
+except InsufficientCreditsError:
+    print("Balance too low — top up at scrapedatshi.com/portal/billing")
 except RateLimitError as e:
     print(f"Rate limit hit: {e.message}")
 except ScrapedatshiError as e:
@@ -253,19 +291,19 @@ except ScrapedatshiError as e:
 
 ---
 
-## Tier Limits
+## Hard Caps
 
-| Feature | Free | Basic | Pro | Enterprise |
-|---|---|---|---|---|
-| Price | $0/mo | $9/mo | $29/mo | $49/mo + usage |
-| Chunk to JSON | ✓ | ✓ | ✓ | ✓ |
-| Sitemap Crawl | — | ✓ | ✓ | ✓ |
-| Contextual Retrieval | — | ✓ | ✓ | ✓ |
-| Full Pipeline | — | — | ✓ | ✓ |
-| Deep Spider Crawl | — | — | ✓ | ✓ |
-| Max pages / crawl | 5 | 10 | 25 | 50 |
-| Max chunks / request | 500 | 2,000 | 10,000 | Unlimited |
-| Concurrent requests | 1 | 3 | 10 | 25 |
+Per-request hard caps protect server stability and apply to all accounts:
+
+| Cap | Limit |
+|---|---|
+| Max pages / crawl | 35 |
+| Max pages / spider | 35 |
+| Max chunks / request | 35,000 |
+| Max content size | ~75,000 words (auto-truncated) |
+
+Exceeding a hard cap returns HTTP 400. Content exceeding the size limit is automatically
+truncated — check `result.content_truncated` to detect this.
 
 ---
 

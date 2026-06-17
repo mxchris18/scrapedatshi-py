@@ -7,6 +7,20 @@ Accessed via client.pipeline.*
 
 Sync methods use httpx.Client (blocking).
 Async methods use httpx.AsyncClient (non-blocking, for asyncio).
+
+Billing:
+    Credits are deducted after each successful API call. Failed requests are not charged.
+    Every response includes ``credits_used`` and ``credits_remaining`` fields.
+
+    Pricing (per operation):
+        - URL Fetch:       $0.0020 per URL fetched or file parsed
+        - Spider Fetch:    $0.0050 per URL (spider crawl, replaces URL fetch)
+        - Chunk Fee:       $0.0005 per chunk generated (all routes)
+        - Injection Fee:   $0.0030 per chunk upserted to vector DB (sync/ingest only)
+        - Contextual:      $0.0030 per URL when contextual_retrieval=True
+
+    If your balance is too low, :class:`~scrapedatshi.exceptions.InsufficientCreditsError`
+    is raised (HTTP 402). Top up at https://scrapedatshi.com/portal/billing.
 """
 
 from __future__ import annotations
@@ -31,14 +45,17 @@ class PipelineNamespace:
     """
     All pipeline operations, accessible via ``client.pipeline``.
 
-    Chunk-to-JSON (no embedding required):
+    Chunk-to-JSON (no embedding required — available to all accounts):
         - chunk_url()        / chunk_url_async()
         - chunk_file()       / chunk_file_async()
         - crawl()            / crawl_async()
 
-    Full Pipeline (embed + vector DB inject, Pro/Enterprise only):
+    Full Pipeline (embed + vector DB inject):
         - sync()             / sync_async()
         - ingest()           / ingest_async()
+
+    All methods return typed response models with ``credits_used`` and
+    ``credits_remaining`` fields for programmatic spend tracking.
     """
 
     def __init__(self, client: "ScrapedatshiClient") -> None:
@@ -57,11 +74,16 @@ class PipelineNamespace:
     ) -> ChunkResult:
         """
         Scrape a URL, chunk the content, and return structured JSON chunks.
-        No embedding or vector DB required — works on all tiers.
+        No embedding or vector DB required.
+
+        Credits charged: URL fetch fee ($0.0020) + chunk fee ($0.0005 × chunks generated).
+        With contextual_retrieval=True: additional $0.0030 per URL.
 
         Args:
             url: The web URL to scrape and chunk.
-            contextual_retrieval: Enable RAG 2.0 contextual enrichment (Basic+ tier).
+            contextual_retrieval: Enable RAG 2.0 contextual enrichment. Generates a
+                1-sentence document summary via your LLM and prepends it to every chunk,
+                boosting retrieval accuracy by 35–50%.
             llm_provider: LLM provider for contextual retrieval (e.g. ``"openai"``).
             llm_api_key: API key for the LLM provider.
             llm_model: Model name (e.g. ``"gpt-4o-mini"``).
@@ -69,11 +91,17 @@ class PipelineNamespace:
         Returns:
             :class:`~scrapedatshi.models.ChunkResult`
 
+        Raises:
+            :class:`~scrapedatshi.exceptions.InsufficientCreditsError`: Balance too low.
+            :class:`~scrapedatshi.exceptions.ValidationError`: Bad request payload.
+            :class:`~scrapedatshi.exceptions.AuthError`: Invalid API key.
+
         Example::
 
             result = client.pipeline.chunk_url("https://docs.example.com")
             for chunk in result.chunks:
                 print(chunk.content)
+            print(f"Cost: ${result.credits_used:.4f}")
         """
         payload: dict = {"url": url}
         if contextual_retrieval:
@@ -88,9 +116,12 @@ class PipelineNamespace:
         data = self._client._post("/v1/rag-chunk", json=payload)
         return ChunkResult(
             chunks=data.get("chunks", []),
-            total_chunks=data.get("total_chunks", len(data.get("chunks", []))),
+            total_chunks=data.get("chunk_count", len(data.get("chunks", []))),
             source=url,
-            contextual_retrieval_used=data.get("contextual_retrieval_used", False),
+            contextual_retrieval_used=bool(data.get("contextual_retrieval", False)),
+            content_truncated=bool(data.get("content_truncated", False)),
+            credits_used=float(data.get("credits_used", 0.0)),
+            credits_remaining=float(data.get("credits_remaining", 0.0)),
         )
 
     async def chunk_url_async(
@@ -116,9 +147,12 @@ class PipelineNamespace:
         data = await self._client._post_async("/v1/rag-chunk", json=payload)
         return ChunkResult(
             chunks=data.get("chunks", []),
-            total_chunks=data.get("total_chunks", len(data.get("chunks", []))),
+            total_chunks=data.get("chunk_count", len(data.get("chunks", []))),
             source=url,
-            contextual_retrieval_used=data.get("contextual_retrieval_used", False),
+            contextual_retrieval_used=bool(data.get("contextual_retrieval", False)),
+            content_truncated=bool(data.get("content_truncated", False)),
+            credits_used=float(data.get("credits_used", 0.0)),
+            credits_remaining=float(data.get("credits_remaining", 0.0)),
         )
 
     # ── Chunk to JSON — File ──────────────────────────────────────────────────
@@ -135,11 +169,13 @@ class PipelineNamespace:
         """
         Upload a local file, chunk its content, and return structured JSON chunks.
         Supports PDF, DOCX, TXT, MD, and HTML files.
-        No embedding or vector DB required — works on all tiers.
+        No embedding or vector DB required.
+
+        Credits charged: file parse fee ($0.0020) + chunk fee ($0.0005 × chunks generated).
 
         Args:
             file_path: Path to the local file to upload and chunk.
-            contextual_retrieval: Enable RAG 2.0 contextual enrichment (Basic+ tier).
+            contextual_retrieval: Enable RAG 2.0 contextual enrichment.
             llm_provider: LLM provider for contextual retrieval.
             llm_api_key: API key for the LLM provider.
             llm_model: Model name.
@@ -147,10 +183,14 @@ class PipelineNamespace:
         Returns:
             :class:`~scrapedatshi.models.ChunkResult`
 
+        Raises:
+            :class:`~scrapedatshi.exceptions.InsufficientCreditsError`: Balance too low.
+
         Example::
 
             result = client.pipeline.chunk_file("./docs/manual.pdf")
             print(f"Got {result.total_chunks} chunks from {result.source}")
+            print(f"Cost: ${result.credits_used:.4f}")
         """
         path = Path(file_path)
         mime_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
@@ -169,11 +209,20 @@ class PipelineNamespace:
             files = {"file": (path.name, f, mime_type)}
             data = self._client._post("/v1/ingest-chunk", files=files, data=form_data)
 
+        # /v1/ingest-chunk returns per-file results array
+        results = data.get("results", [])
+        all_chunks = []
+        for r in results:
+            all_chunks.extend(r.get("chunks", []))
+
         return ChunkResult(
-            chunks=data.get("chunks", []),
-            total_chunks=data.get("total_chunks", len(data.get("chunks", []))),
+            chunks=all_chunks,
+            total_chunks=data.get("total_chunks", len(all_chunks)),
             source=path.name,
-            contextual_retrieval_used=data.get("contextual_retrieval_used", False),
+            contextual_retrieval_used=bool(data.get("contextual_retrieval", False)),
+            content_truncated=False,
+            credits_used=float(data.get("credits_used", 0.0)),
+            credits_remaining=float(data.get("credits_remaining", 0.0)),
         )
 
     async def chunk_file_async(
@@ -205,11 +254,19 @@ class PipelineNamespace:
                 "/v1/ingest-chunk", files=files, data=form_data
             )
 
+        results = data.get("results", [])
+        all_chunks = []
+        for r in results:
+            all_chunks.extend(r.get("chunks", []))
+
         return ChunkResult(
-            chunks=data.get("chunks", []),
-            total_chunks=data.get("total_chunks", len(data.get("chunks", []))),
+            chunks=all_chunks,
+            total_chunks=data.get("total_chunks", len(all_chunks)),
             source=path.name,
-            contextual_retrieval_used=data.get("contextual_retrieval_used", False),
+            contextual_retrieval_used=bool(data.get("contextual_retrieval", False)),
+            content_truncated=False,
+            credits_used=float(data.get("credits_used", 0.0)),
+            credits_remaining=float(data.get("credits_remaining", 0.0)),
         )
 
     # ── Chunk to JSON — Sitemap Crawl ─────────────────────────────────────────
@@ -226,12 +283,14 @@ class PipelineNamespace:
     ) -> CrawlChunkResult:
         """
         Crawl a website via its sitemap, chunk all pages, and return structured JSON.
-        Requires Basic tier or higher.
+
+        Credits charged: URL fetch fee ($0.0020 × pages crawled) + chunk fee ($0.0005 × chunks).
 
         Args:
             url: The root domain or sitemap URL to crawl.
-            max_pages: Maximum number of pages to crawl (capped by your tier limit).
-            contextual_retrieval: Enable RAG 2.0 contextual enrichment (Basic+ tier).
+            max_pages: Maximum number of pages to crawl (server hard cap: 35).
+            contextual_retrieval: Enable RAG 2.0 contextual enrichment.
+                Additional $0.0030 per URL crawled.
             llm_provider: LLM provider for contextual retrieval.
             llm_api_key: API key for the LLM provider.
             llm_model: Model name.
@@ -239,10 +298,14 @@ class PipelineNamespace:
         Returns:
             :class:`~scrapedatshi.models.CrawlChunkResult`
 
+        Raises:
+            :class:`~scrapedatshi.exceptions.InsufficientCreditsError`: Balance too low.
+
         Example::
 
             result = client.pipeline.crawl("https://example.com", max_pages=10)
             print(f"Crawled {result.pages_crawled} pages → {result.total_chunks} chunks")
+            print(f"Cost: ${result.credits_used:.4f}")
         """
         payload: dict = {"url": url}
         if max_pages is not None:
@@ -257,12 +320,21 @@ class PipelineNamespace:
                 payload["llm_model"] = llm_model
 
         data = self._client._post("/v1/crawl-chunk", json=payload)
+
+        # /v1/crawl-chunk returns chunks_by_page — flatten to a single list
+        chunks_by_page = data.get("chunks_by_page", [])
+        all_chunks = []
+        for page in chunks_by_page:
+            all_chunks.extend(page.get("chunks", []))
+
         return CrawlChunkResult(
-            chunks=data.get("chunks", []),
-            total_chunks=data.get("total_chunks", len(data.get("chunks", []))),
+            chunks=all_chunks,
+            total_chunks=data.get("total_chunks", len(all_chunks)),
             pages_crawled=data.get("pages_crawled", 0),
             source_url=url,
-            contextual_retrieval_used=data.get("contextual_retrieval_used", False),
+            contextual_retrieval_used=bool(data.get("contextual_retrieval", False)),
+            credits_used=float(data.get("credits_used", 0.0)),
+            credits_remaining=float(data.get("credits_remaining", 0.0)),
         )
 
     async def crawl_async(
@@ -289,12 +361,20 @@ class PipelineNamespace:
                 payload["llm_model"] = llm_model
 
         data = await self._client._post_async("/v1/crawl-chunk", json=payload)
+
+        chunks_by_page = data.get("chunks_by_page", [])
+        all_chunks = []
+        for page in chunks_by_page:
+            all_chunks.extend(page.get("chunks", []))
+
         return CrawlChunkResult(
-            chunks=data.get("chunks", []),
-            total_chunks=data.get("total_chunks", len(data.get("chunks", []))),
+            chunks=all_chunks,
+            total_chunks=data.get("total_chunks", len(all_chunks)),
             pages_crawled=data.get("pages_crawled", 0),
             source_url=url,
-            contextual_retrieval_used=data.get("contextual_retrieval_used", False),
+            contextual_retrieval_used=bool(data.get("contextual_retrieval", False)),
+            credits_used=float(data.get("credits_used", 0.0)),
+            credits_remaining=float(data.get("credits_remaining", 0.0)),
         )
 
     # ── Full Pipeline — URL Sync ──────────────────────────────────────────────
@@ -316,7 +396,12 @@ class PipelineNamespace:
     ) -> SyncResult:
         """
         Full pipeline: scrape a URL, embed chunks, and inject into a vector DB.
-        Requires Pro tier or higher.
+
+        Credits charged:
+            - URL fetch fee: $0.0020
+            - Chunk fee: $0.0005 × chunks generated
+            - Injection fee: $0.0030 × chunks upserted to vector DB
+            - Contextual (optional): $0.0030 per URL
 
         Args:
             url: The web URL to scrape, embed, and inject.
@@ -334,6 +419,9 @@ class PipelineNamespace:
         Returns:
             :class:`~scrapedatshi.models.SyncResult`
 
+        Raises:
+            :class:`~scrapedatshi.exceptions.InsufficientCreditsError`: Balance too low.
+
         Example::
 
             result = client.pipeline.sync(
@@ -345,6 +433,7 @@ class PipelineNamespace:
                 index_name="my-docs",
             )
             print(f"Upserted {result.vectors_upserted} vectors")
+            print(f"Cost: ${result.credits_used:.4f}")
         """
         payload: dict = {
             "url": url,
@@ -370,10 +459,14 @@ class PipelineNamespace:
             status=data.get("status", "success"),
             chunks_created=data.get("chunks_created", 0),
             vectors_upserted=data.get("vectors_upserted", 0),
-            total_tokens=data.get("total_tokens", 0),
+            total_tokens=data.get(
+                "total_tokens_estimated", data.get("total_tokens", 0)
+            ),
             embedding_provider=embedding_provider,
             vector_db_provider=vector_db,
-            contextual_retrieval_used=data.get("contextual_retrieval_used", False),
+            contextual_retrieval_used=bool(data.get("contextual_retrieval", False)),
+            credits_used=float(data.get("credits_used", 0.0)),
+            credits_remaining=float(data.get("credits_remaining", 0.0)),
         )
 
     async def sync_async(
@@ -416,10 +509,14 @@ class PipelineNamespace:
             status=data.get("status", "success"),
             chunks_created=data.get("chunks_created", 0),
             vectors_upserted=data.get("vectors_upserted", 0),
-            total_tokens=data.get("total_tokens", 0),
+            total_tokens=data.get(
+                "total_tokens_estimated", data.get("total_tokens", 0)
+            ),
             embedding_provider=embedding_provider,
             vector_db_provider=vector_db,
-            contextual_retrieval_used=data.get("contextual_retrieval_used", False),
+            contextual_retrieval_used=bool(data.get("contextual_retrieval", False)),
+            credits_used=float(data.get("credits_used", 0.0)),
+            credits_remaining=float(data.get("credits_remaining", 0.0)),
         )
 
     # ── Full Pipeline — File Ingest ───────────────────────────────────────────
@@ -441,7 +538,12 @@ class PipelineNamespace:
     ) -> IngestResult:
         """
         Full pipeline: upload a local file, embed chunks, and inject into a vector DB.
-        Requires Pro tier or higher.
+
+        Credits charged:
+            - File parse fee: $0.0020
+            - Chunk fee: $0.0005 × chunks generated
+            - Injection fee: $0.0030 × chunks upserted to vector DB
+            - Contextual (optional): $0.0030 per file
 
         Args:
             file_path: Path to the local file to upload, embed, and inject.
@@ -458,6 +560,9 @@ class PipelineNamespace:
 
         Returns:
             :class:`~scrapedatshi.models.IngestResult`
+
+        Raises:
+            :class:`~scrapedatshi.exceptions.InsufficientCreditsError`: Balance too low.
         """
         path = Path(file_path)
         mime_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
@@ -484,15 +589,18 @@ class PipelineNamespace:
             files = {"file": (path.name, f, mime_type)}
             data = self._client._post("/v1/ingest", files=files, data=form_data)
 
+        # /v1/ingest returns aggregate totals
         return IngestResult(
-            status=data.get("status", "success"),
-            chunks_created=data.get("chunks_created", 0),
-            vectors_upserted=data.get("vectors_upserted", 0),
-            total_tokens=data.get("total_tokens", 0),
+            status="success" if data.get("files_failed", 0) == 0 else "partial",
+            chunks_created=data.get("total_chunks_created", 0),
+            vectors_upserted=data.get("total_vectors_upserted", 0),
+            total_tokens=data.get("total_tokens_estimated", 0),
             embedding_provider=embedding_provider,
             vector_db_provider=vector_db,
             filename=path.name,
-            contextual_retrieval_used=data.get("contextual_retrieval_used", False),
+            contextual_retrieval_used=bool(contextual_retrieval),
+            credits_used=float(data.get("credits_used", 0.0)),
+            credits_remaining=float(data.get("credits_remaining", 0.0)),
         )
 
     async def ingest_async(
@@ -539,12 +647,14 @@ class PipelineNamespace:
             )
 
         return IngestResult(
-            status=data.get("status", "success"),
-            chunks_created=data.get("chunks_created", 0),
-            vectors_upserted=data.get("vectors_upserted", 0),
-            total_tokens=data.get("total_tokens", 0),
+            status="success" if data.get("files_failed", 0) == 0 else "partial",
+            chunks_created=data.get("total_chunks_created", 0),
+            vectors_upserted=data.get("total_vectors_upserted", 0),
+            total_tokens=data.get("total_tokens_estimated", 0),
             embedding_provider=embedding_provider,
             vector_db_provider=vector_db,
             filename=path.name,
-            contextual_retrieval_used=data.get("contextual_retrieval_used", False),
+            contextual_retrieval_used=bool(contextual_retrieval),
+            credits_used=float(data.get("credits_used", 0.0)),
+            credits_remaining=float(data.get("credits_remaining", 0.0)),
         )
