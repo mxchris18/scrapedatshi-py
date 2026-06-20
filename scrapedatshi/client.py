@@ -28,6 +28,7 @@ from scrapedatshi.exceptions import (
     InsufficientCreditsError,
     RateLimitError,
     ScrapedatshiError,
+    ServerBusyError,
     ServerError,
     TierError,  # kept for backward compatibility — no longer raised by the API
     TimeoutError,
@@ -229,6 +230,21 @@ def _handle_response(response: httpx.Response) -> dict[str, Any]:
 
     if status == 429:
         raise RateLimitError(detail, status_code=status)
+
+    if status == 503:
+        # Server is temporarily at capacity — extract Retry-After header
+        retry_after: int | None = None
+        try:
+            raw = response.headers.get("Retry-After")
+            if raw:
+                retry_after = int(raw)
+        except (ValueError, TypeError):
+            pass
+        raise ServerBusyError(
+            detail or "Server is temporarily at capacity. Please retry shortly.",
+            status_code=status,
+            retry_after=retry_after,
+        )
 
     if status >= 500:
         raise ServerError(detail, status_code=status)

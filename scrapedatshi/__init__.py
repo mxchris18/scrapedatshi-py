@@ -35,6 +35,17 @@ Quick start::
     )
     print(result.extracted)
 
+    # Multi-page schema extraction via crawl
+    result = client.pipeline.extract_crawl(
+        url="https://example.com/products",
+        schema={"title": "string — product name", "price": "number — price in USD"},
+        llm_provider="openai",
+        llm_api_key="sk-...",
+        max_pages=20,
+    )
+    for page in result.successful_results:
+        print(page.url, page.extracted)
+
 Full documentation: https://docs.scrapedatshi.com/sdk/python
 Supported providers: from scrapedatshi.providers import EMBEDDING_PROVIDERS, VECTOR_DB_PROVIDERS, LLM_PROVIDERS
 """
@@ -45,6 +56,7 @@ from scrapedatshi.exceptions import (
     InsufficientCreditsError,
     RateLimitError,
     ScrapedatshiError,
+    ServerBusyError,
     ServerError,
     TierError,
     TimeoutError,
@@ -54,12 +66,14 @@ from scrapedatshi.models import (
     Chunk,
     ChunkResult,
     CrawlChunkResult,
+    ExtractCrawlPageResult,
+    ExtractCrawlResult,
     ExtractResult,
     IngestResult,
     SyncResult,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.4.0"
 __author__ = "scrapedatshi"
 __all__ = [
     # Client
@@ -72,6 +86,7 @@ __all__ = [
     "TierError",
     "ValidationError",
     "ServerError",
+    "ServerBusyError",
     "TimeoutError",
     # Models
     "Chunk",
@@ -80,4 +95,6 @@ __all__ = [
     "SyncResult",
     "IngestResult",
     "ExtractResult",
+    "ExtractCrawlResult",
+    "ExtractCrawlPageResult",
 ]

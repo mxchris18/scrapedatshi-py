@@ -30,6 +30,8 @@ if TYPE_CHECKING:
 from scrapedatshi.models import (
     ChunkResult,
     CrawlChunkResult,
+    ExtractCrawlPageResult,
+    ExtractCrawlResult,
     ExtractResult,
     IngestResult,
     SyncResult,
@@ -1004,3 +1006,218 @@ class PipelineNamespace:
             credits_used=float(data.get("credits_used", 0.0)),
             credits_remaining=float(data.get("credits_remaining", 0.0)),
         )
+
+    # ── Schema Extraction via Crawl ───────────────────────────────────────────
+
+    def extract_crawl(
+        self,
+        url: str,
+        *,
+        schema: dict[str, str],
+        llm_provider: str,
+        llm_api_key: str,
+        llm_model: str | None = None,
+        crawl_mode: str = "sitemap",
+        max_pages: int = 5,
+        selector: str | None = None,
+        include_pattern: str | None = None,
+        exclude_pattern: str | None = None,
+        extract_as_list: bool = False,
+    ) -> ExtractCrawlResult:
+        """
+        Crawl a domain and extract structured data from every page using your LLM.
+
+        Combines site crawling with schema extraction in a single call. Each page
+        is processed independently — failed pages return an error object without
+        aborting the batch. Only successfully extracted pages are billed.
+
+        Two crawl modes are available:
+            - ``"sitemap"`` (default): Reads the site's ``sitemap.xml`` to discover URLs.
+            - ``"spider"``: Follows ``<a href>`` links from the root URL.
+
+        Args:
+            url: The root domain to crawl (e.g. ``"https://example.com"``).
+            schema: Dict mapping field names to description strings.
+
+                Example::
+
+                    schema={
+                        "title": "string — the product name",
+                        "price": "number — the price in USD",
+                        "in_stock": "boolean — whether the item is in stock",
+                    }
+
+            llm_provider: LLM provider to use (``"openai"``, ``"anthropic"``, or ``"gemini"``).
+                See :data:`scrapedatshi.providers.LLM_PROVIDERS` for details.
+            llm_api_key: Your LLM provider API key.
+            llm_model: Optional model override. Standard models (mini, flash, haiku) use
+                an 8,000 char context window. Advanced models use 30,000 chars.
+            crawl_mode: ``"sitemap"`` (default) or ``"spider"``.
+            max_pages: Maximum pages to crawl and extract from.
+                Sitemap mode: up to 100 pages. Spider mode: up to 25 pages.
+            selector: Optional CSS selector applied to every page before extraction.
+            include_pattern: Only crawl URLs containing this substring (e.g. ``"/products/"``).
+            exclude_pattern: Skip URLs containing this substring (e.g. ``"/blog/"``).
+            extract_as_list: If True, extracts ALL matching items on each page as a
+                JSON array instead of a single object per page.
+
+        Returns:
+            :class:`~scrapedatshi.models.ExtractCrawlResult`
+
+        Raises:
+            :class:`~scrapedatshi.exceptions.InsufficientCreditsError`: Balance too low.
+            :class:`~scrapedatshi.exceptions.ServerBusyError`: Server at capacity — retry after ``e.retry_after`` seconds.
+            :class:`~scrapedatshi.exceptions.ValidationError`: Bad schema or request.
+            :class:`~scrapedatshi.exceptions.AuthError`: Invalid API key.
+
+        Billing:
+            Per successfully extracted page only:
+            ``$0.0020 + $0.0030 + (N_fields × $0.0001)`` per page.
+
+            Example: 10 pages × 5 fields = 10 × $0.0055 = **$0.055**
+
+        Example — extract products from an entire catalogue::
+
+            result = client.pipeline.extract_crawl(
+                url="https://example.com/products",
+                schema={
+                    "title": "string — the product name",
+                    "price": "number — the price in USD",
+                    "in_stock": "boolean — whether the item is in stock",
+                },
+                llm_provider="openai",
+                llm_api_key="sk-...",
+                max_pages=20,
+                include_pattern="/products/",
+            )
+
+            print(f"Extracted {result.pages_extracted}/{result.pages_attempted} pages")
+            print(f"Cost: ${result.credits_used:.4f}")
+
+            for page in result.results:
+                if page.ok:
+                    print(f"  {page.url}: {page.extracted}")
+                else:
+                    print(f"  {page.url}: FAILED — {page.error}")
+
+            # Access only successful results
+            for page in result.successful_results:
+                print(page.extracted["title"], page.extracted["price"])
+
+        Example — spider crawl with retry on server busy::
+
+            import time
+            from scrapedatshi.exceptions import ServerBusyError
+
+            try:
+                result = client.pipeline.extract_crawl(
+                    url="https://example.com",
+                    schema={"title": "string — the page title"},
+                    llm_provider="openai",
+                    llm_api_key="sk-...",
+                    crawl_mode="spider",
+                    max_pages=10,
+                )
+            except ServerBusyError as e:
+                wait = e.retry_after or 30
+                print(f"Server busy — retrying in {wait}s")
+                time.sleep(wait)
+                # retry...
+        """
+        payload: dict = {
+            "url": url,
+            "schema": schema,
+            "llm_provider": llm_provider,
+            "llm_api_key": llm_api_key,
+            "crawl_mode": crawl_mode,
+            "max_pages": max_pages,
+        }
+        if llm_model:
+            payload["llm_model"] = llm_model
+        if selector:
+            payload["selector"] = selector
+        if include_pattern:
+            payload["include_pattern"] = include_pattern
+        if exclude_pattern:
+            payload["exclude_pattern"] = exclude_pattern
+        if extract_as_list:
+            payload["extract_as_list"] = True
+
+        data = self._client._post("/v1/extract-crawl", json=payload)
+        return _parse_extract_crawl_result(data)
+
+    async def extract_crawl_async(
+        self,
+        url: str,
+        *,
+        schema: dict[str, str],
+        llm_provider: str,
+        llm_api_key: str,
+        llm_model: str | None = None,
+        crawl_mode: str = "sitemap",
+        max_pages: int = 5,
+        selector: str | None = None,
+        include_pattern: str | None = None,
+        exclude_pattern: str | None = None,
+        extract_as_list: bool = False,
+    ) -> ExtractCrawlResult:
+        """Async version of :meth:`extract_crawl`."""
+        payload: dict = {
+            "url": url,
+            "schema": schema,
+            "llm_provider": llm_provider,
+            "llm_api_key": llm_api_key,
+            "crawl_mode": crawl_mode,
+            "max_pages": max_pages,
+        }
+        if llm_model:
+            payload["llm_model"] = llm_model
+        if selector:
+            payload["selector"] = selector
+        if include_pattern:
+            payload["include_pattern"] = include_pattern
+        if exclude_pattern:
+            payload["exclude_pattern"] = exclude_pattern
+        if extract_as_list:
+            payload["extract_as_list"] = True
+
+        data = await self._client._post_async("/v1/extract-crawl", json=payload)
+        return _parse_extract_crawl_result(data)
+
+
+# ── Response parser helpers ───────────────────────────────────────────────────
+
+
+def _parse_extract_crawl_result(data: dict) -> ExtractCrawlResult:
+    """Parse the /v1/extract-crawl response into an ExtractCrawlResult model."""
+    raw_results = data.get("results", [])
+    page_results = [
+        ExtractCrawlPageResult(
+            url=r.get("url", ""),
+            status=r.get("status", "error"),
+            extracted=r.get("extracted"),
+            error=r.get("error"),
+        )
+        for r in raw_results
+    ]
+
+    pages_attempted = data.get("pages_attempted", len(raw_results))
+    pages_extracted = data.get("pages_extracted", sum(1 for r in page_results if r.ok))
+    pages_failed = data.get("pages_failed", sum(1 for r in page_results if not r.ok))
+
+    return ExtractCrawlResult(
+        results=page_results,
+        pages_extracted=pages_extracted,
+        pages_failed=pages_failed,
+        pages_attempted=pages_attempted,
+        pages_discovered=data.get("pages_discovered", pages_attempted),
+        root_url=data.get("root_url", ""),
+        crawl_mode=data.get("crawl_mode", "sitemap"),
+        field_count=data.get("field_count", 0),
+        llm_provider=data.get("llm_provider", ""),
+        llm_model=data.get("llm_model", ""),
+        extract_as_list=bool(data.get("extract_as_list", False)),
+        job_id=data.get("job_id"),
+        credits_used=float(data.get("credits_used", 0.0)),
+        credits_remaining=float(data.get("credits_remaining", 0.0)),
+    )

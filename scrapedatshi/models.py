@@ -316,3 +316,144 @@ class ExtractResult(BaseModel):
             f"ExtractResult(url={self.url!r}, fields={self.field_count}, "
             f"mode={mode}, credits_used={self.credits_used:.4f})"
         )
+
+
+# ── Extract Crawl responses ───────────────────────────────────────────────────
+
+
+class ExtractCrawlPageResult(BaseModel):
+    """
+    Result for a single page within an :class:`ExtractCrawlResult`.
+
+    ``status`` is ``"ok"`` when extraction succeeded, ``"error"`` when it failed.
+    Failed pages do not abort the batch — they return an error message and the
+    crawl continues to the next page.
+    """
+
+    url: str = Field(..., description="The URL that was scraped and extracted from.")
+    status: str = Field(
+        ...,
+        description="'ok' if extraction succeeded, 'error' if it failed.",
+    )
+    extracted: Any = Field(
+        None,
+        description=(
+            "Extracted data matching your schema. "
+            "A dict when extract_as_list=False (default), "
+            "or a list[dict] when extract_as_list=True. "
+            "None when status='error'."
+        ),
+    )
+    error: str | None = Field(
+        None,
+        description="Error message when status='error'. None when status='ok'.",
+    )
+
+    @property
+    def ok(self) -> bool:
+        """True if this page was successfully extracted."""
+        return self.status == "ok"
+
+    def __repr__(self) -> str:
+        if self.ok:
+            return f"ExtractCrawlPageResult(url={self.url!r}, status='ok')"
+        return f"ExtractCrawlPageResult(url={self.url!r}, status='error', error={self.error!r})"
+
+
+class ExtractCrawlResult(BaseModel):
+    """
+    Response from extract_crawl() — multi-page schema extraction via site crawl.
+
+    Each page in ``results`` is processed independently. Failed pages return an
+    error object without aborting the batch. Only successfully extracted pages
+    are billed.
+
+    Example::
+
+        result = client.pipeline.extract_crawl(
+            url="https://example.com/products",
+            schema={
+                "title": "string — the product name",
+                "price": "number — the price in USD",
+            },
+            llm_provider="openai",
+            llm_api_key="sk-...",
+            max_pages=20,
+        )
+
+        print(f"Extracted {result.pages_extracted}/{result.pages_attempted} pages")
+        print(f"Cost: ${result.credits_used:.4f} | Remaining: ${result.credits_remaining:.4f}")
+
+        for page in result.results:
+            if page.ok:
+                print(f"  {page.url}: {page.extracted}")
+            else:
+                print(f"  {page.url}: ERROR — {page.error}")
+
+        # Access only successful results
+        successful = result.successful_results
+        print(f"Got {len(successful)} successful extractions")
+    """
+
+    results: list[ExtractCrawlPageResult] = Field(
+        ...,
+        description="Per-page extraction results. Each item has url, status, extracted, and error.",
+    )
+    pages_extracted: int = Field(
+        ..., description="Number of pages successfully extracted."
+    )
+    pages_failed: int = Field(
+        ..., description="Number of pages that failed to extract."
+    )
+    pages_attempted: int = Field(
+        ..., description="Total number of pages attempted (extracted + failed)."
+    )
+    pages_discovered: int = Field(
+        ..., description="Total URLs discovered in the sitemap or spider crawl."
+    )
+    root_url: str = Field(..., description="The root URL that was crawled.")
+    crawl_mode: str = Field(..., description="Crawl mode used: 'sitemap' or 'spider'.")
+    field_count: int = Field(..., description="Number of schema fields defined.")
+    llm_provider: str = Field(..., description="LLM provider used for extraction.")
+    llm_model: str = Field(..., description="LLM model used for extraction.")
+    extract_as_list: bool = Field(
+        False,
+        description="Whether list extraction mode was used.",
+    )
+    job_id: str | None = Field(
+        None,
+        description=(
+            "Persistent job ID for this crawl. Use GET /portal/jobs/{job_id} "
+            "to retrieve results after the fact."
+        ),
+    )
+    credits_used: float = Field(
+        0.0,
+        description="Total credits deducted (only for successfully extracted pages).",
+    )
+    credits_remaining: float = Field(
+        0.0,
+        description="Account credit balance after this request.",
+    )
+
+    @property
+    def successful_results(self) -> list[ExtractCrawlPageResult]:
+        """Returns only the successfully extracted page results."""
+        return [r for r in self.results if r.ok]
+
+    @property
+    def failed_results(self) -> list[ExtractCrawlPageResult]:
+        """Returns only the failed page results."""
+        return [r for r in self.results if not r.ok]
+
+    def __len__(self) -> int:
+        return self.pages_extracted
+
+    def __repr__(self) -> str:
+        return (
+            f"ExtractCrawlResult("
+            f"pages_extracted={self.pages_extracted}, "
+            f"pages_failed={self.pages_failed}, "
+            f"root_url={self.root_url!r}, "
+            f"credits_used={self.credits_used:.4f})"
+        )

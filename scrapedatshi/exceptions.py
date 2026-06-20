@@ -61,5 +61,55 @@ class ServerError(ScrapedatshiError):
     """Raised when the API returns a 5xx server error."""
 
 
+class ServerBusyError(ScrapedatshiError):
+    """
+    Raised when the server is temporarily at capacity (HTTP 503).
+
+    The server returns a ``Retry-After`` header indicating how many seconds
+    to wait before retrying. This occurs when the crawl job queue is full
+    (too many concurrent crawl or extraction jobs running server-wide).
+
+    Attributes:
+        retry_after: Seconds to wait before retrying (from the ``Retry-After``
+                     response header). ``None`` if the header was not present.
+
+    Example::
+
+        import time
+        from scrapedatshi.exceptions import ServerBusyError
+
+        try:
+            result = client.pipeline.extract_crawl(
+                url="https://example.com",
+                schema={"title": "string — the page title"},
+                llm_provider="openai",
+                llm_api_key="sk-...",
+                max_pages=50,
+            )
+        except ServerBusyError as e:
+            wait = e.retry_after or 30
+            print(f"Server busy — retrying in {wait}s")
+            time.sleep(wait)
+            # retry the request...
+    """
+
+    def __init__(
+        self,
+        message: str,
+        status_code: int | None = None,
+        retry_after: int | None = None,
+    ):
+        super().__init__(message, status_code)
+        self.retry_after = retry_after
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__.__name__}("
+            f"message={self.message!r}, "
+            f"status_code={self.status_code}, "
+            f"retry_after={self.retry_after})"
+        )
+
+
 class TimeoutError(ScrapedatshiError):
     """Raised when the request times out."""

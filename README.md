@@ -270,6 +270,7 @@ from scrapedatshi.providers import (
 for key, info in EMBEDDING_PROVIDERS.items():
     print(f"{key}: {info['label']} — default model: {info['default_model']}")
     print(f"  {info['notes']}")
+# → openai: OpenAI — default model: text-embedding-3-small
 
 # Check required fields for a vector DB
 print(VECTOR_DB_PROVIDERS["pinecone"]["required_fields"])
@@ -416,6 +417,82 @@ result.credits_remaining   # float
 
 ---
 
+### Schema Extraction via Crawl
+
+Crawl an entire domain and extract structured data from every page in a single call. Each page is processed independently — failed pages return an error object without aborting the batch. **Only successfully extracted pages are billed.**
+
+```python
+result = client.pipeline.extract_crawl(
+    url="https://example.com/products",
+    schema={
+        "title": "string — the product name",
+        "price": "number — the price in USD",
+        "in_stock": "boolean — whether the item is in stock",
+    },
+    llm_provider="openai",
+    llm_api_key="sk-...",
+    max_pages=20,
+    include_pattern="/products/",
+)
+
+print(f"Extracted {result.pages_extracted}/{result.pages_attempted} pages")
+print(f"Cost: ${result.credits_used:.4f} | Remaining: ${result.credits_remaining:.4f}")
+
+# Iterate all results
+for page in result.results:
+    if page.ok:
+        print(f"  {page.url}: {page.extracted}")
+    else:
+        print(f"  {page.url}: FAILED — {page.error}")
+
+# Access only successful results
+for page in result.successful_results:
+    print(page.extracted["title"], page.extracted["price"])
+```
+
+**Billing:** `$0.0020 + $0.0030 + (N_fields × $0.0001)` per successfully extracted page.
+Example: 20 pages × 3 fields = 20 × $0.0053 = **$0.106**
+
+#### Spider crawl mode
+
+```python
+result = client.pipeline.extract_crawl(
+    url="https://example.com",
+    schema={"title": "string — the page title", "summary": "string — a brief summary"},
+    llm_provider="anthropic",
+    llm_api_key="sk-ant-...",
+    crawl_mode="spider",
+    max_pages=10,
+)
+```
+
+#### `ExtractCrawlResult` model
+
+```python
+result.results             # list[ExtractCrawlPageResult] — per-page results
+result.pages_extracted     # int — successfully extracted
+result.pages_failed        # int — failed (not billed)
+result.pages_attempted     # int — total attempted
+result.pages_discovered    # int — total URLs found in sitemap/spider
+result.successful_results  # list[ExtractCrawlPageResult] — only ok pages
+result.failed_results      # list[ExtractCrawlPageResult] — only failed pages
+result.job_id              # str | None — persistent job ID
+result.credits_used        # float
+result.credits_remaining   # float
+```
+
+Each `ExtractCrawlPageResult`:
+
+```python
+page.url        # str — the URL scraped
+page.status     # "ok" | "error"
+page.extracted  # dict | list[dict] | None — extracted data (None on error)
+page.error      # str | None — error message (None on success)
+page.ok         # bool — True if status == "ok"
+```
+
+---
+
 ## Error Handling
 
 ```python
@@ -424,6 +501,7 @@ from scrapedatshi.exceptions import (
     InsufficientCreditsError,  # Balance too low — top up at portal/billing (402)
     RateLimitError,         # Per-request hard cap or rate limit exceeded (429)
     ValidationError,        # Bad request payload (422)
+    ServerBusyError,        # Server at capacity — retry after e.retry_after seconds (503)
     ServerError,            # API server error (5xx)
     TimeoutError,           # Request timed out
     ScrapedatshiError       # Base exception — catch-all
@@ -443,6 +521,29 @@ except RateLimitError as e:
     print(f"Rate limit hit: {e.message}")
 except ScrapedatshiError as e:
     print(f"API error {e.status_code}: {e.message}")
+```
+
+#### Handling `ServerBusyError` (503)
+
+Large crawl jobs use a server-side queue. When the queue is full, the API returns HTTP 503 with a `Retry-After` header. The SDK surfaces this as `ServerBusyError` with a `retry_after` attribute:
+
+```python
+import time
+from scrapedatshi.exceptions import ServerBusyError
+
+try:
+    result = client.pipeline.extract_crawl(
+        url="https://example.com",
+        schema={"title": "string — the page title"},
+        llm_provider="openai",
+        llm_api_key="sk-...",
+        max_pages=50,
+    )
+except ServerBusyError as e:
+    wait = e.retry_after or 30  # seconds to wait (from Retry-After header)
+    print(f"Server busy — retrying in {wait}s")
+    time.sleep(wait)
+    # retry the request...
 ```
 
 ---
