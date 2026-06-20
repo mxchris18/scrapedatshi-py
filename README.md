@@ -302,11 +302,13 @@ Models are discovered dynamically after key verification — you always get the 
 
 ### LLM Providers (for Contextual Retrieval & Schema Extraction)
 
-| Key | Provider | Default Model |
-|---|---|---|
-| `openai` | OpenAI | `gpt-4o-mini` |
-| `anthropic` | Anthropic | `claude-3-haiku-20240307` |
-| `gemini` | Google Gemini | `gemini-1.5-flash` |
+| Key | Provider | Default Model | Context Window |
+|---|---|---|---|
+| `openai` | OpenAI | `gpt-4o-mini` | Standard (mini, etc.): 8k chars · Advanced (gpt-4o, etc.): 30k chars |
+| `anthropic` | Anthropic | `claude-3-haiku-20240307` | Standard (haiku): 8k chars · Advanced (sonnet, opus): 30k chars |
+| `gemini` | Google Gemini | `gemini-1.5-flash` | Standard (flash, lite, nano): 8k chars · Advanced (pro, etc.): 30k chars |
+
+**Model tiers:** The API automatically selects the context window based on the model name. Standard models (containing "mini", "flash", "haiku", "lite", or "nano") use an 8,000 character context window. All other models are treated as Advanced and use a 30,000 character context window. Use an advanced model for long-form pages (documentation, legal docs, research papers).
 
 ---
 
@@ -451,10 +453,14 @@ Per-request hard caps protect server stability and apply to all accounts:
 
 | Cap | Limit |
 |---|---|
-| Max pages / crawl | 25 |
-| Max pages / spider | 25 |
+| Max pages / sitemap crawl | 200 |
+| Max pages / spider crawl | 50 |
 | Max chunks / request | 10,000 |
 | Max content size | ~75,000 words (auto-truncated) |
+
+**Sitemap crawl** (`crawl_mode="sitemap"`): Reads `sitemap.xml` to discover URLs. Up to 200 pages per request.
+
+**Spider crawl** (`crawl_mode="spider"`): Follows `<a href>` links via BFS. Up to 50 pages per request. More compute-intensive — start small and increase as needed.
 
 Exceeding a hard cap returns HTTP 400. Content exceeding the size limit is automatically
 truncated — check `result.content_truncated` to detect this.

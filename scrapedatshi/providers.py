@@ -158,7 +158,10 @@ LLM_PROVIDERS: dict[str, dict] = {
         "default_model": "gpt-4o-mini",
         "notes": (
             "Models discovered dynamically after key verification. "
-            "Recommended: gpt-4o-mini (fast, low cost) or gpt-4o (best quality)."
+            "Model tiers affect context window for schema extraction: "
+            "Standard models (gpt-4o-mini, etc.) use an 8,000 char context window; "
+            "Advanced models (gpt-4o, etc.) use a 30,000 char context window. "
+            "Recommended: gpt-4o-mini (fast, low cost) or gpt-4o (best quality for long pages)."
         ),
     },
     "anthropic": {
@@ -166,7 +169,10 @@ LLM_PROVIDERS: dict[str, dict] = {
         "default_model": "claude-3-haiku-20240307",
         "notes": (
             "Models discovered dynamically after key verification. "
-            "Recommended: claude-3-haiku (fast, low cost) or claude-3-5-sonnet (best quality)."
+            "Model tiers affect context window for schema extraction: "
+            "Standard models (haiku) use an 8,000 char context window; "
+            "Advanced models (sonnet, opus) use a 30,000 char context window. "
+            "Recommended: claude-3-haiku (fast, low cost) or claude-3-5-sonnet (best quality for long pages)."
         ),
     },
     "gemini": {
@@ -174,7 +180,11 @@ LLM_PROVIDERS: dict[str, dict] = {
         "default_model": "gemini-1.5-flash",
         "notes": (
             "Models discovered dynamically after key verification. "
-            "Recommended: gemini-1.5-flash (fast, low cost) or gemini-1.5-pro (best quality)."
+            "Model tiers affect context window for schema extraction: "
+            "Standard models (flash, lite, nano) use an 8,000 char context window; "
+            "Advanced models (pro, etc.) use a 30,000 char context window. "
+            "Recommended: gemini-1.5-flash (fast, low cost) or gemini-1.5-pro (best quality for long pages). "
+            "Note: Google API returns model names with a 'models/' prefix."
         ),
     },
 }
