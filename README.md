@@ -2,7 +2,7 @@
 
 Official Python SDK for the [scrapedatshi](https://scrapedatshi.com) RAG pipeline API.
 
-Scrape URLs, chunk documents, embed content, and inject into vector databases — all from a clean, typed Python interface.
+Scrape URLs, chunk documents, embed content, inject into vector databases, and extract structured data — all from a clean, typed Python interface.
 
 ---
 
@@ -62,13 +62,13 @@ Credits are deducted after each successful API call. Failed requests are never c
 
 | Operation | Rate | Applies To |
 |---|---|---|
-| URL Fetch | $0.0020 / URL | `/v1/rag-chunk`, `/v1/crawl`, `/v1/crawl-chunk`, `/v1/sync`, `/v1/ingest` |
+| URL Fetch | $0.0020 / URL | `/v1/rag-chunk`, `/v1/crawl-chunk`, `/v1/sync`, `/v1/ingest` |
 | Spider Fetch | $0.0050 / URL | `/v1/spider` (replaces URL fetch) |
 | Chunk Fee | $0.0005 / chunk | All routes — per chunk generated |
 | Injection Fee | $0.0030 / chunk | `/v1/sync`, `/v1/ingest` — per chunk upserted to vector DB |
 | Contextual Retrieval | $0.0030 / URL | When `contextual_retrieval=True` |
-
-**Example:** `sync()` on 1 URL → 10 chunks = $0.0020 + (10 × $0.0005) + (10 × $0.0030) = **$0.0370**
+| JS Render | $0.0050 / URL | When `js_render=True` (Playwright headless browser) |
+| Schema Extract | $0.0020 + $0.0030 + ($0.0001 × fields) | `/v1/extract` |
 
 Top up your balance at [scrapedatshi.com/portal/billing](https://scrapedatshi.com/portal/billing).
 
@@ -93,9 +93,20 @@ result = client.pipeline.chunk_url("https://docs.example.com")
 # result.content_truncated   → bool (True if content exceeded ~75,000 words)
 ```
 
+#### Chunk a URL with JS rendering
+
+For JavaScript-heavy pages and SPAs that require a browser to render:
+
+```python
+result = client.pipeline.chunk_url(
+    "https://spa.example.com/dashboard",
+    js_render=True,
+)
+```
+
 #### Chunk a local file
 
-Supports PDF, DOCX, TXT, MD, and HTML.
+Supports PDF, MD, TXT, YAML, YML, and JSON.
 
 ```python
 result = client.pipeline.chunk_file("./docs/manual.pdf")
@@ -106,10 +117,20 @@ print(f"Cost: ${result.credits_used:.4f}")
 
 #### Crawl a website
 
-Crawls via sitemap and chunks all pages.
+Crawls via sitemap or spider and chunks all pages.
 
 ```python
+# Sitemap crawl (default) — reads sitemap.xml
 result = client.pipeline.crawl("https://example.com", max_pages=10)
+
+# Spider crawl — follows links, works on any site
+result = client.pipeline.crawl(
+    "https://example.com",
+    crawl_mode="spider",
+    max_pages=5,
+    include_pattern="/docs/",
+    exclude_pattern="/blog/",
+)
 
 print(f"Crawled {result.pages_crawled} pages → {result.total_chunks} chunks")
 print(f"Cost: ${result.credits_used:.4f}")
@@ -129,8 +150,10 @@ result = client.pipeline.sync(
     embedding_provider="openai",
     embedding_api_key="sk-...",
     vector_db="pinecone",
-    vector_db_api_key="pc-...",
-    index_name="my-docs",
+    vector_db_config={
+        "api_key": "pc-...",
+        "index_host": "https://my-index-abc123.svc.pinecone.io",
+    },
 )
 
 print(f"Upserted {result.vectors_upserted} vectors ({result.total_tokens} tokens)")
@@ -144,9 +167,71 @@ result = client.pipeline.ingest(
     file_path="./docs/manual.pdf",
     embedding_provider="openai",
     embedding_api_key="sk-...",
-    vector_db="pinecone",
-    vector_db_api_key="pc-...",
-    index_name="my-docs",
+    vector_db="qdrant",
+    vector_db_config={
+        "url": "https://your-cluster.qdrant.io",
+        "collection_name": "documents",
+        "api_key": "qdrant-key",  # optional for local Qdrant
+    },
+)
+```
+
+---
+
+### Schema Extraction
+
+Extract structured data from any URL using your own LLM key. Define a schema and the API returns a typed JSON object — or a list of objects for pages with multiple items.
+
+#### Extract a single object
+
+```python
+result = client.pipeline.extract(
+    url="https://example.com/products/widget-pro",
+    schema={
+        "title": "string — the product name",
+        "price": "number — the price in USD",
+        "in_stock": "boolean — whether the item is in stock",
+        "description": "string — the product description",
+    },
+    llm_provider="openai",
+    llm_api_key="sk-...",
+)
+
+print(result.extracted)
+# → {"title": "Widget Pro", "price": 29.99, "in_stock": True, "description": "..."}
+print(f"Cost: ${result.credits_used:.4f}")
+```
+
+#### Extract a list of items
+
+Use `extract_as_list=True` for pages with multiple matching items (product listings, article feeds, search results):
+
+```python
+result = client.pipeline.extract(
+    url="https://example.com/products",
+    schema={
+        "title": "string — the product name",
+        "price": "number — the price in USD",
+    },
+    llm_provider="openai",
+    llm_api_key="sk-...",
+    extract_as_list=True,
+)
+
+print(f"Extracted {result.item_count} products")
+for product in result.extracted:
+    print(f"  {product['title']}: ${product['price']}")
+```
+
+#### Extract from a JS-rendered page
+
+```python
+result = client.pipeline.extract(
+    url="https://spa.example.com/data",
+    schema={"value": "string — the data value"},
+    llm_provider="anthropic",
+    llm_api_key="sk-ant-...",
+    js_render=True,
 )
 ```
 
@@ -155,8 +240,6 @@ result = client.pipeline.ingest(
 ### Contextual Retrieval (RAG 2.0)
 
 Prepend an LLM-generated document summary to every chunk before embedding, dramatically improving retrieval accuracy.
-
-Additional cost: $0.0030 per URL when `contextual_retrieval=True`.
 
 ```python
 result = client.pipeline.chunk_url(
@@ -168,7 +251,62 @@ result = client.pipeline.chunk_url(
 )
 ```
 
-Supported LLM providers: `openai`, `anthropic`, `gemini`
+Available on all pipeline methods: `chunk_url()`, `chunk_file()`, `crawl()`, `sync()`, `ingest()`.
+
+---
+
+## Supported Providers
+
+Discover all supported providers programmatically:
+
+```python
+from scrapedatshi.providers import (
+    EMBEDDING_PROVIDERS,
+    VECTOR_DB_PROVIDERS,
+    LLM_PROVIDERS,
+)
+
+# List all embedding providers
+for key, info in EMBEDDING_PROVIDERS.items():
+    print(f"{key}: {info['label']} — default model: {info['default_model']}")
+    print(f"  {info['notes']}")
+
+# Check required fields for a vector DB
+print(VECTOR_DB_PROVIDERS["pinecone"]["required_fields"])
+# → ["api_key", "index_host"]
+```
+
+### Embedding Providers
+
+| Key | Provider | Default Model | Notes |
+|---|---|---|---|
+| `openai` | OpenAI | `text-embedding-3-small` | 1536 dims. Also: `text-embedding-3-large` (3072), `text-embedding-ada-002` (1536) |
+| `cohere` | Cohere | `embed-english-v3.0` | 1024 dims. Also: `embed-multilingual-v3.0`, `embed-english-light-v3.0` (384) |
+| `gemini` | Google Gemini | `gemini-embedding-001` | 3072 dims. Also: `text-embedding-004` (768) |
+| `mistral` | Mistral | `mistral-embed` | 1024 dims |
+| `voyage` | Voyage AI | `voyage-3` | 1024 dims. Also: `voyage-3-lite` (512), `voyage-code-3`, `voyage-finance-2`, `voyage-law-2` |
+
+Models are discovered dynamically after key verification — you always get the latest available models for your account.
+
+### Vector Database Providers
+
+| Key | Provider | Required Fields |
+|---|---|---|
+| `pinecone` | Pinecone | `api_key`, `index_host` |
+| `qdrant` | Qdrant | `url`, `collection_name` |
+| `supabase` | Supabase (pgvector) | `connection_string`, `table_name` |
+| `weaviate` | Weaviate | `url`, `class_name` |
+| `mongodb` | MongoDB Atlas | `connection_string`, `database_name`, `collection_name` |
+| `azure_cosmos` | Azure Cosmos DB (NoSQL) | `connection_string`, `database_name`, `container_name` |
+| `azure_cosmos_mongo` | Azure Cosmos DB (MongoDB API) | `connection_string`, `database_name`, `collection_name` |
+
+### LLM Providers (for Contextual Retrieval & Schema Extraction)
+
+| Key | Provider | Default Model |
+|---|---|---|
+| `openai` | OpenAI | `gpt-4o-mini` |
+| `anthropic` | Anthropic | `claude-3-haiku-20240307` |
+| `gemini` | Google Gemini | `gemini-1.5-flash` |
 
 ---
 
@@ -257,6 +395,23 @@ result.credits_used        # float
 result.credits_remaining   # float
 ```
 
+### `ExtractResult`
+
+```python
+result.extracted           # dict | list[dict] — the extracted data
+result.field_count         # int — number of schema fields
+result.item_count          # int | None — number of items (list mode only)
+result.is_list             # bool — True if extracted is a list
+result.url                 # str — the URL that was scraped
+result.llm_provider        # str
+result.llm_model           # str
+result.schema_fields       # list[str] — field names from your schema
+result.js_render           # bool — whether JS rendering was used
+result.content_warning     # str | None — warning if content may be incomplete
+result.credits_used        # float
+result.credits_remaining   # float
+```
+
 ---
 
 ## Error Handling
@@ -278,8 +433,7 @@ try:
         embedding_provider="openai",
         embedding_api_key="sk-...",
         vector_db="pinecone",
-        vector_db_api_key="pc-...",
-        index_name="my-docs",
+        vector_db_config={"api_key": "pc-...", "index_host": "https://..."},
     )
 except InsufficientCreditsError:
     print("Balance too low — top up at scrapedatshi.com/portal/billing")
@@ -297,9 +451,9 @@ Per-request hard caps protect server stability and apply to all accounts:
 
 | Cap | Limit |
 |---|---|
-| Max pages / crawl | 35 |
-| Max pages / spider | 35 |
-| Max chunks / request | 35,000 |
+| Max pages / crawl | 25 |
+| Max pages / spider | 25 |
+| Max chunks / request | 10,000 |
 | Max content size | ~75,000 words (auto-truncated) |
 
 Exceeding a hard cap returns HTTP 400. Content exceeding the size limit is automatically

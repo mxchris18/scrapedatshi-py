@@ -11,13 +11,7 @@ Async methods use httpx.AsyncClient (non-blocking, for asyncio).
 Billing:
     Credits are deducted after each successful API call. Failed requests are not charged.
     Every response includes ``credits_used`` and ``credits_remaining`` fields.
-
-    Pricing (per operation):
-        - URL Fetch:       $0.0020 per URL fetched or file parsed
-        - Spider Fetch:    $0.0050 per URL (spider crawl, replaces URL fetch)
-        - Chunk Fee:       $0.0005 per chunk generated (all routes)
-        - Injection Fee:   $0.0030 per chunk upserted to vector DB (sync/ingest only)
-        - Contextual:      $0.0030 per URL when contextual_retrieval=True
+    See services/credits.py on the server for current pricing constants.
 
     If your balance is too low, :class:`~scrapedatshi.exceptions.InsufficientCreditsError`
     is raised (HTTP 402). Top up at https://scrapedatshi.com/portal/billing.
@@ -36,6 +30,7 @@ if TYPE_CHECKING:
 from scrapedatshi.models import (
     ChunkResult,
     CrawlChunkResult,
+    ExtractResult,
     IngestResult,
     SyncResult,
 )
@@ -54,8 +49,15 @@ class PipelineNamespace:
         - sync()             / sync_async()
         - ingest()           / ingest_async()
 
+    Schema Extraction (extract structured data from any URL using your LLM):
+        - extract()          / extract_async()
+
     All methods return typed response models with ``credits_used`` and
     ``credits_remaining`` fields for programmatic spend tracking.
+
+    Supported providers:
+        See :mod:`scrapedatshi.providers` for a full reference of supported
+        embedding providers, vector databases, and LLM providers.
     """
 
     def __init__(self, client: "ScrapedatshiClient") -> None:
@@ -67,6 +69,10 @@ class PipelineNamespace:
         self,
         url: str,
         *,
+        selector: str | None = None,
+        chunk_size: int = 512,
+        overlap: int = 50,
+        js_render: bool = False,
         contextual_retrieval: bool = False,
         llm_provider: str | None = None,
         llm_api_key: str | None = None,
@@ -76,15 +82,20 @@ class PipelineNamespace:
         Scrape a URL, chunk the content, and return structured JSON chunks.
         No embedding or vector DB required.
 
-        Credits charged: URL fetch fee ($0.0020) + chunk fee ($0.0005 × chunks generated).
-        With contextual_retrieval=True: additional $0.0030 per URL.
-
         Args:
             url: The web URL to scrape and chunk.
+            selector: Optional CSS selector to target a specific element
+                (e.g. ``"article"``, ``".content"``).
+            chunk_size: Target token count per chunk (default: 512, range: 64–4096).
+            overlap: Token overlap between consecutive chunks (default: 50).
+            js_render: If True, uses a headless Chromium browser (Playwright) to
+                fully render JavaScript before scraping. Required for SPAs and
+                JS-heavy pages. Adds a surcharge per fetch.
             contextual_retrieval: Enable RAG 2.0 contextual enrichment. Generates a
                 1-sentence document summary via your LLM and prepends it to every chunk,
                 boosting retrieval accuracy by 35–50%.
             llm_provider: LLM provider for contextual retrieval (e.g. ``"openai"``).
+                See :data:`scrapedatshi.providers.LLM_PROVIDERS` for supported providers.
             llm_api_key: API key for the LLM provider.
             llm_model: Model name (e.g. ``"gpt-4o-mini"``).
 
@@ -102,8 +113,22 @@ class PipelineNamespace:
             for chunk in result.chunks:
                 print(chunk.content)
             print(f"Cost: ${result.credits_used:.4f}")
+
+            # With JS rendering for JavaScript-heavy pages
+            result = client.pipeline.chunk_url(
+                "https://spa.example.com",
+                js_render=True,
+            )
         """
         payload: dict = {"url": url}
+        if selector:
+            payload["selector"] = selector
+        if chunk_size != 512:
+            payload["chunk_size"] = chunk_size
+        if overlap != 50:
+            payload["overlap"] = overlap
+        if js_render:
+            payload["js_render"] = True
         if contextual_retrieval:
             payload["contextual_retrieval"] = True
             if llm_provider:
@@ -128,6 +153,10 @@ class PipelineNamespace:
         self,
         url: str,
         *,
+        selector: str | None = None,
+        chunk_size: int = 512,
+        overlap: int = 50,
+        js_render: bool = False,
         contextual_retrieval: bool = False,
         llm_provider: str | None = None,
         llm_api_key: str | None = None,
@@ -135,6 +164,14 @@ class PipelineNamespace:
     ) -> ChunkResult:
         """Async version of :meth:`chunk_url`."""
         payload: dict = {"url": url}
+        if selector:
+            payload["selector"] = selector
+        if chunk_size != 512:
+            payload["chunk_size"] = chunk_size
+        if overlap != 50:
+            payload["overlap"] = overlap
+        if js_render:
+            payload["js_render"] = True
         if contextual_retrieval:
             payload["contextual_retrieval"] = True
             if llm_provider:
@@ -161,6 +198,8 @@ class PipelineNamespace:
         self,
         file_path: str | Path,
         *,
+        chunk_size: int = 512,
+        overlap: int = 50,
         contextual_retrieval: bool = False,
         llm_provider: str | None = None,
         llm_api_key: str | None = None,
@@ -168,13 +207,13 @@ class PipelineNamespace:
     ) -> ChunkResult:
         """
         Upload a local file, chunk its content, and return structured JSON chunks.
-        Supports PDF, DOCX, TXT, MD, and HTML files.
+        Supports PDF, MD, TXT, YAML, YML, and JSON files.
         No embedding or vector DB required.
-
-        Credits charged: file parse fee ($0.0020) + chunk fee ($0.0005 × chunks generated).
 
         Args:
             file_path: Path to the local file to upload and chunk.
+            chunk_size: Target token count per chunk (default: 512).
+            overlap: Token overlap between consecutive chunks (default: 50).
             contextual_retrieval: Enable RAG 2.0 contextual enrichment.
             llm_provider: LLM provider for contextual retrieval.
             llm_api_key: API key for the LLM provider.
@@ -196,6 +235,10 @@ class PipelineNamespace:
         mime_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
 
         form_data: dict = {}
+        if chunk_size != 512:
+            form_data["chunk_size"] = str(chunk_size)
+        if overlap != 50:
+            form_data["overlap"] = str(overlap)
         if contextual_retrieval:
             form_data["contextual_retrieval"] = "true"
             if llm_provider:
@@ -206,7 +249,7 @@ class PipelineNamespace:
                 form_data["llm_model"] = llm_model
 
         with open(path, "rb") as f:
-            files = {"file": (path.name, f, mime_type)}
+            files = {"files": (path.name, f, mime_type)}
             data = self._client._post("/v1/ingest-chunk", files=files, data=form_data)
 
         # /v1/ingest-chunk returns per-file results array
@@ -229,6 +272,8 @@ class PipelineNamespace:
         self,
         file_path: str | Path,
         *,
+        chunk_size: int = 512,
+        overlap: int = 50,
         contextual_retrieval: bool = False,
         llm_provider: str | None = None,
         llm_api_key: str | None = None,
@@ -239,6 +284,10 @@ class PipelineNamespace:
         mime_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
 
         form_data: dict = {}
+        if chunk_size != 512:
+            form_data["chunk_size"] = str(chunk_size)
+        if overlap != 50:
+            form_data["overlap"] = str(overlap)
         if contextual_retrieval:
             form_data["contextual_retrieval"] = "true"
             if llm_provider:
@@ -249,7 +298,7 @@ class PipelineNamespace:
                 form_data["llm_model"] = llm_model
 
         with open(path, "rb") as f:
-            files = {"file": (path.name, f, mime_type)}
+            files = {"files": (path.name, f, mime_type)}
             data = await self._client._post_async(
                 "/v1/ingest-chunk", files=files, data=form_data
             )
@@ -276,22 +325,38 @@ class PipelineNamespace:
         url: str,
         *,
         max_pages: int | None = None,
+        crawl_mode: str = "sitemap",
+        selector: str | None = None,
+        include_pattern: str | None = None,
+        exclude_pattern: str | None = None,
+        js_render: bool = False,
         contextual_retrieval: bool = False,
         llm_provider: str | None = None,
         llm_api_key: str | None = None,
         llm_model: str | None = None,
     ) -> CrawlChunkResult:
         """
-        Crawl a website via its sitemap, chunk all pages, and return structured JSON.
+        Crawl a website, chunk all pages, and return structured JSON.
 
-        Credits charged: URL fetch fee ($0.0020 × pages crawled) + chunk fee ($0.0005 × chunks).
+        Two crawl modes are available:
+            - ``"sitemap"`` (default): Reads the site's ``sitemap.xml`` to discover URLs.
+              Works best for documentation sites and blogs.
+            - ``"spider"``: Follows ``<a href>`` links from the root URL.
+              Works on any website — no sitemap required. More compute-intensive.
 
         Args:
             url: The root domain or sitemap URL to crawl.
-            max_pages: Maximum number of pages to crawl (server hard cap: 35).
+            max_pages: Maximum number of pages to crawl (server hard cap: 25).
+            crawl_mode: ``"sitemap"`` (default) or ``"spider"``.
+            selector: Optional CSS selector applied to every page.
+            include_pattern: Only crawl URLs containing this substring (e.g. ``"/docs/"``).
+            exclude_pattern: Skip URLs containing this substring (e.g. ``"/blog/"``).
+            js_render: If True, uses a headless browser to render JS before scraping.
+                Adds a surcharge per page fetched.
             contextual_retrieval: Enable RAG 2.0 contextual enrichment.
-                Additional $0.0030 per URL crawled.
+                Adds a surcharge per URL crawled.
             llm_provider: LLM provider for contextual retrieval.
+                See :data:`scrapedatshi.providers.LLM_PROVIDERS` for supported providers.
             llm_api_key: API key for the LLM provider.
             llm_model: Model name.
 
@@ -306,10 +371,26 @@ class PipelineNamespace:
             result = client.pipeline.crawl("https://example.com", max_pages=10)
             print(f"Crawled {result.pages_crawled} pages → {result.total_chunks} chunks")
             print(f"Cost: ${result.credits_used:.4f}")
+
+            # Spider mode — works on any site, no sitemap needed
+            result = client.pipeline.crawl(
+                "https://example.com",
+                crawl_mode="spider",
+                max_pages=5,
+                include_pattern="/docs/",
+            )
         """
-        payload: dict = {"url": url}
+        payload: dict = {"url": url, "crawl_mode": crawl_mode}
         if max_pages is not None:
             payload["max_pages"] = max_pages
+        if selector:
+            payload["selector"] = selector
+        if include_pattern:
+            payload["include_pattern"] = include_pattern
+        if exclude_pattern:
+            payload["exclude_pattern"] = exclude_pattern
+        if js_render:
+            payload["js_render"] = True
         if contextual_retrieval:
             payload["contextual_retrieval"] = True
             if llm_provider:
@@ -342,15 +423,28 @@ class PipelineNamespace:
         url: str,
         *,
         max_pages: int | None = None,
+        crawl_mode: str = "sitemap",
+        selector: str | None = None,
+        include_pattern: str | None = None,
+        exclude_pattern: str | None = None,
+        js_render: bool = False,
         contextual_retrieval: bool = False,
         llm_provider: str | None = None,
         llm_api_key: str | None = None,
         llm_model: str | None = None,
     ) -> CrawlChunkResult:
         """Async version of :meth:`crawl`."""
-        payload: dict = {"url": url}
+        payload: dict = {"url": url, "crawl_mode": crawl_mode}
         if max_pages is not None:
             payload["max_pages"] = max_pages
+        if selector:
+            payload["selector"] = selector
+        if include_pattern:
+            payload["include_pattern"] = include_pattern
+        if exclude_pattern:
+            payload["exclude_pattern"] = exclude_pattern
+        if js_render:
+            payload["js_render"] = True
         if contextual_retrieval:
             payload["contextual_retrieval"] = True
             if llm_provider:
@@ -386,9 +480,12 @@ class PipelineNamespace:
         embedding_provider: str,
         embedding_api_key: str,
         vector_db: str,
-        vector_db_api_key: str,
-        index_name: str,
+        vector_db_config: dict,
         embedding_model: str | None = None,
+        selector: str | None = None,
+        chunk_size: int = 512,
+        overlap: int = 50,
+        js_render: bool = False,
         contextual_retrieval: bool = False,
         llm_provider: str | None = None,
         llm_api_key: str | None = None,
@@ -397,20 +494,34 @@ class PipelineNamespace:
         """
         Full pipeline: scrape a URL, embed chunks, and inject into a vector DB.
 
-        Credits charged:
-            - URL fetch fee: $0.0020
-            - Chunk fee: $0.0005 × chunks generated
-            - Injection fee: $0.0030 × chunks upserted to vector DB
-            - Contextual (optional): $0.0030 per URL
-
         Args:
             url: The web URL to scrape, embed, and inject.
-            embedding_provider: Embedding provider (``"openai"``, ``"cohere"``, etc.).
+            embedding_provider: Embedding provider key (e.g. ``"openai"``).
+                See :data:`scrapedatshi.providers.EMBEDDING_PROVIDERS` for all options.
             embedding_api_key: API key for the embedding provider.
-            vector_db: Vector DB provider (``"pinecone"``, ``"qdrant"``, ``"weaviate"``).
-            vector_db_api_key: API key for the vector DB.
-            index_name: Target index / collection name in the vector DB.
+            vector_db: Vector DB provider key (e.g. ``"pinecone"``).
+                See :data:`scrapedatshi.providers.VECTOR_DB_PROVIDERS` for all options.
+            vector_db_config: Provider-specific configuration dict. Required fields
+                vary by provider — see :data:`scrapedatshi.providers.VECTOR_DB_PROVIDERS`.
+
+                Pinecone example::
+
+                    vector_db_config={"api_key": "pc-...", "index_host": "https://my-index.svc.pinecone.io"}
+
+                Qdrant example::
+
+                    vector_db_config={"url": "https://your-cluster.qdrant.io", "collection_name": "docs"}
+
+                Supabase example::
+
+                    vector_db_config={"connection_string": "postgresql://...", "table_name": "documents"}
+
             embedding_model: Optional model override (e.g. ``"text-embedding-3-small"``).
+            selector: Optional CSS selector to target a specific element.
+            chunk_size: Target token count per chunk (default: 512).
+            overlap: Token overlap between consecutive chunks (default: 50).
+            js_render: If True, uses a headless browser to render JS before scraping.
+                Adds a surcharge per fetch.
             contextual_retrieval: Enable RAG 2.0 contextual enrichment.
             llm_provider: LLM provider for contextual retrieval.
             llm_api_key: API key for the LLM provider.
@@ -429,22 +540,29 @@ class PipelineNamespace:
                 embedding_provider="openai",
                 embedding_api_key="sk-...",
                 vector_db="pinecone",
-                vector_db_api_key="pc-...",
-                index_name="my-docs",
+                vector_db_config={
+                    "api_key": "pc-...",
+                    "index_host": "https://my-index-abc123.svc.pinecone.io",
+                },
             )
             print(f"Upserted {result.vectors_upserted} vectors")
             print(f"Cost: ${result.credits_used:.4f}")
         """
-        payload: dict = {
-            "url": url,
-            "embedding_provider": embedding_provider,
-            "embedding_api_key": embedding_api_key,
-            "vector_db": vector_db,
-            "vector_db_api_key": vector_db_api_key,
-            "index_name": index_name,
-        }
+        embedding: dict = {"provider": embedding_provider, "api_key": embedding_api_key}
         if embedding_model:
-            payload["embedding_model"] = embedding_model
+            embedding["model"] = embedding_model
+
+        vdb: dict = {"provider": vector_db, **vector_db_config}
+
+        payload: dict = {"url": url, "embedding": embedding, "vector_db": vdb}
+        if selector:
+            payload["selector"] = selector
+        if chunk_size != 512:
+            payload["chunk_size"] = chunk_size
+        if overlap != 50:
+            payload["overlap"] = overlap
+        if js_render:
+            payload["js_render"] = True
         if contextual_retrieval:
             payload["contextual_retrieval"] = True
             if llm_provider:
@@ -476,25 +594,33 @@ class PipelineNamespace:
         embedding_provider: str,
         embedding_api_key: str,
         vector_db: str,
-        vector_db_api_key: str,
-        index_name: str,
+        vector_db_config: dict,
         embedding_model: str | None = None,
+        selector: str | None = None,
+        chunk_size: int = 512,
+        overlap: int = 50,
+        js_render: bool = False,
         contextual_retrieval: bool = False,
         llm_provider: str | None = None,
         llm_api_key: str | None = None,
         llm_model: str | None = None,
     ) -> SyncResult:
         """Async version of :meth:`sync`."""
-        payload: dict = {
-            "url": url,
-            "embedding_provider": embedding_provider,
-            "embedding_api_key": embedding_api_key,
-            "vector_db": vector_db,
-            "vector_db_api_key": vector_db_api_key,
-            "index_name": index_name,
-        }
+        embedding: dict = {"provider": embedding_provider, "api_key": embedding_api_key}
         if embedding_model:
-            payload["embedding_model"] = embedding_model
+            embedding["model"] = embedding_model
+
+        vdb: dict = {"provider": vector_db, **vector_db_config}
+
+        payload: dict = {"url": url, "embedding": embedding, "vector_db": vdb}
+        if selector:
+            payload["selector"] = selector
+        if chunk_size != 512:
+            payload["chunk_size"] = chunk_size
+        if overlap != 50:
+            payload["overlap"] = overlap
+        if js_render:
+            payload["js_render"] = True
         if contextual_retrieval:
             payload["contextual_retrieval"] = True
             if llm_provider:
@@ -528,9 +654,10 @@ class PipelineNamespace:
         embedding_provider: str,
         embedding_api_key: str,
         vector_db: str,
-        vector_db_api_key: str,
-        index_name: str,
+        vector_db_config: dict,
         embedding_model: str | None = None,
+        chunk_size: int = 512,
+        overlap: int = 50,
         contextual_retrieval: bool = False,
         llm_provider: str | None = None,
         llm_api_key: str | None = None,
@@ -539,20 +666,19 @@ class PipelineNamespace:
         """
         Full pipeline: upload a local file, embed chunks, and inject into a vector DB.
 
-        Credits charged:
-            - File parse fee: $0.0020
-            - Chunk fee: $0.0005 × chunks generated
-            - Injection fee: $0.0030 × chunks upserted to vector DB
-            - Contextual (optional): $0.0030 per file
-
         Args:
             file_path: Path to the local file to upload, embed, and inject.
-            embedding_provider: Embedding provider (``"openai"``, ``"cohere"``, etc.).
+                Supported formats: .pdf, .md, .txt, .yaml, .yml, .json
+            embedding_provider: Embedding provider key (e.g. ``"openai"``).
+                See :data:`scrapedatshi.providers.EMBEDDING_PROVIDERS` for all options.
             embedding_api_key: API key for the embedding provider.
-            vector_db: Vector DB provider (``"pinecone"``, ``"qdrant"``, ``"weaviate"``).
-            vector_db_api_key: API key for the vector DB.
-            index_name: Target index / collection name in the vector DB.
+            vector_db: Vector DB provider key (e.g. ``"pinecone"``).
+                See :data:`scrapedatshi.providers.VECTOR_DB_PROVIDERS` for all options.
+            vector_db_config: Provider-specific configuration dict.
+                See :meth:`sync` for examples.
             embedding_model: Optional model override.
+            chunk_size: Target token count per chunk (default: 512).
+            overlap: Token overlap between consecutive chunks (default: 50).
             contextual_retrieval: Enable RAG 2.0 contextual enrichment.
             llm_provider: LLM provider for contextual retrieval.
             llm_api_key: API key for the LLM provider.
@@ -563,19 +689,41 @@ class PipelineNamespace:
 
         Raises:
             :class:`~scrapedatshi.exceptions.InsufficientCreditsError`: Balance too low.
+
+        Example::
+
+            result = client.pipeline.ingest(
+                file_path="./docs/manual.pdf",
+                embedding_provider="openai",
+                embedding_api_key="sk-...",
+                vector_db="qdrant",
+                vector_db_config={
+                    "url": "https://your-cluster.qdrant.io",
+                    "collection_name": "documents",
+                    "api_key": "qdrant-key",
+                },
+            )
+            print(f"Ingested {result.chunks_created} chunks → {result.vectors_upserted} vectors")
         """
         path = Path(file_path)
         mime_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
 
-        form_data: dict = {
-            "embedding_provider": embedding_provider,
-            "embedding_api_key": embedding_api_key,
-            "vector_db": vector_db,
-            "vector_db_api_key": vector_db_api_key,
-            "index_name": index_name,
-        }
+        embedding_cfg = {"provider": embedding_provider, "api_key": embedding_api_key}
         if embedding_model:
-            form_data["embedding_model"] = embedding_model
+            embedding_cfg["model"] = embedding_model
+
+        vdb_cfg = {"provider": vector_db, **vector_db_config}
+
+        import json as _json
+
+        form_data: dict = {
+            "embedding_config": _json.dumps(embedding_cfg),
+            "vector_db_config": _json.dumps(vdb_cfg),
+        }
+        if chunk_size != 512:
+            form_data["chunk_size"] = str(chunk_size)
+        if overlap != 50:
+            form_data["overlap"] = str(overlap)
         if contextual_retrieval:
             form_data["contextual_retrieval"] = "true"
             if llm_provider:
@@ -586,10 +734,9 @@ class PipelineNamespace:
                 form_data["llm_model"] = llm_model
 
         with open(path, "rb") as f:
-            files = {"file": (path.name, f, mime_type)}
+            files = {"files": (path.name, f, mime_type)}
             data = self._client._post("/v1/ingest", files=files, data=form_data)
 
-        # /v1/ingest returns aggregate totals
         return IngestResult(
             status="success" if data.get("files_failed", 0) == 0 else "partial",
             chunks_created=data.get("total_chunks_created", 0),
@@ -610,9 +757,10 @@ class PipelineNamespace:
         embedding_provider: str,
         embedding_api_key: str,
         vector_db: str,
-        vector_db_api_key: str,
-        index_name: str,
+        vector_db_config: dict,
         embedding_model: str | None = None,
+        chunk_size: int = 512,
+        overlap: int = 50,
         contextual_retrieval: bool = False,
         llm_provider: str | None = None,
         llm_api_key: str | None = None,
@@ -622,15 +770,22 @@ class PipelineNamespace:
         path = Path(file_path)
         mime_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
 
-        form_data: dict = {
-            "embedding_provider": embedding_provider,
-            "embedding_api_key": embedding_api_key,
-            "vector_db": vector_db,
-            "vector_db_api_key": vector_db_api_key,
-            "index_name": index_name,
-        }
+        embedding_cfg = {"provider": embedding_provider, "api_key": embedding_api_key}
         if embedding_model:
-            form_data["embedding_model"] = embedding_model
+            embedding_cfg["model"] = embedding_model
+
+        vdb_cfg = {"provider": vector_db, **vector_db_config}
+
+        import json as _json
+
+        form_data: dict = {
+            "embedding_config": _json.dumps(embedding_cfg),
+            "vector_db_config": _json.dumps(vdb_cfg),
+        }
+        if chunk_size != 512:
+            form_data["chunk_size"] = str(chunk_size)
+        if overlap != 50:
+            form_data["overlap"] = str(overlap)
         if contextual_retrieval:
             form_data["contextual_retrieval"] = "true"
             if llm_provider:
@@ -641,7 +796,7 @@ class PipelineNamespace:
                 form_data["llm_model"] = llm_model
 
         with open(path, "rb") as f:
-            files = {"file": (path.name, f, mime_type)}
+            files = {"files": (path.name, f, mime_type)}
             data = await self._client._post_async(
                 "/v1/ingest", files=files, data=form_data
             )
@@ -655,6 +810,194 @@ class PipelineNamespace:
             vector_db_provider=vector_db,
             filename=path.name,
             contextual_retrieval_used=bool(contextual_retrieval),
+            credits_used=float(data.get("credits_used", 0.0)),
+            credits_remaining=float(data.get("credits_remaining", 0.0)),
+        )
+
+    # ── Schema Extraction ─────────────────────────────────────────────────────
+
+    def extract(
+        self,
+        url: str,
+        *,
+        schema: dict[str, str],
+        llm_provider: str,
+        llm_api_key: str,
+        llm_model: str | None = None,
+        selector: str | None = None,
+        extract_as_list: bool = False,
+        js_render: bool = False,
+        click_selector: str | None = None,
+    ) -> ExtractResult:
+        """
+        Scrape a URL and extract structured data matching your schema using an LLM.
+
+        You bring your own LLM key — scrapedatshi handles the scraping and
+        orchestration. Supports OpenAI, Anthropic, and Google Gemini.
+
+        Args:
+            url: The web URL to scrape and extract from.
+            schema: Dict mapping field names to description strings. The LLM uses
+                these descriptions to understand what to extract.
+
+                Example::
+
+                    schema={
+                        "title": "string — the product name",
+                        "price": "number — the price in USD",
+                        "in_stock": "boolean — whether the item is in stock",
+                        "description": "string — the product description",
+                    }
+
+            llm_provider: LLM provider to use (``"openai"``, ``"anthropic"``, or ``"gemini"``).
+                See :data:`scrapedatshi.providers.LLM_PROVIDERS` for details.
+            llm_api_key: Your LLM provider API key.
+            llm_model: Optional model override. Defaults vary by provider:
+                - openai: ``"gpt-4o-mini"``
+                - anthropic: ``"claude-3-haiku-20240307"``
+                - gemini: ``"gemini-1.5-flash"``
+            selector: Optional CSS selector to target a specific section of the page
+                before extraction (e.g. ``"article"``, ``".product-details"``).
+            extract_as_list: If True, extracts ALL matching items on the page as a
+                JSON array instead of a single object. Use for pages with multiple
+                items (product listings, article feeds, search results, etc.).
+            js_render: If True, uses a headless Chromium browser (Playwright) to
+                fully render JavaScript before extracting. Required for SPAs and
+                JS-heavy pages. Adds a surcharge per fetch.
+            click_selector: Optional CSS selector for an element to click after page
+                load. Use for interaction-gated content (tabs, accordions, load-more
+                buttons). Only used when ``js_render=True``.
+
+        Returns:
+            :class:`~scrapedatshi.models.ExtractResult`
+
+        Raises:
+            :class:`~scrapedatshi.exceptions.InsufficientCreditsError`: Balance too low.
+            :class:`~scrapedatshi.exceptions.ValidationError`: Bad schema or request.
+            :class:`~scrapedatshi.exceptions.AuthError`: Invalid API key.
+
+        Example — extract a single product::
+
+            result = client.pipeline.extract(
+                url="https://example.com/products/widget-pro",
+                schema={
+                    "title": "string — the product name",
+                    "price": "number — the price in USD",
+                    "in_stock": "boolean — whether the item is in stock",
+                },
+                llm_provider="openai",
+                llm_api_key="sk-...",
+            )
+            print(result.extracted)
+            # → {"title": "Widget Pro", "price": 29.99, "in_stock": True}
+            print(f"Cost: ${result.credits_used:.4f}")
+
+        Example — extract all products from a listing page::
+
+            result = client.pipeline.extract(
+                url="https://example.com/products",
+                schema={
+                    "title": "string — the product name",
+                    "price": "number — the price in USD",
+                },
+                llm_provider="openai",
+                llm_api_key="sk-...",
+                extract_as_list=True,
+            )
+            print(f"Extracted {result.item_count} products")
+            for product in result.extracted:
+                print(f"  {product['title']}: ${product['price']}")
+        """
+        payload: dict = {
+            "url": url,
+            "schema": schema,
+            "llm_provider": llm_provider,
+            "llm_api_key": llm_api_key,
+        }
+        if llm_model:
+            payload["llm_model"] = llm_model
+        if selector:
+            payload["selector"] = selector
+        if extract_as_list:
+            payload["extract_as_list"] = True
+        if js_render:
+            payload["js_render"] = True
+        if click_selector:
+            payload["click_selector"] = click_selector
+
+        data = self._client._post("/v1/extract", json=payload)
+
+        extracted = data.get("extracted", {})
+        item_count = data.get("item_count")
+        if item_count is None and isinstance(extracted, list):
+            item_count = len(extracted)
+
+        return ExtractResult(
+            extracted=extracted,
+            field_count=data.get("field_count", len(schema)),
+            item_count=item_count,
+            url=url,
+            llm_provider=llm_provider,
+            llm_model=data.get(
+                "llm_model", llm_model or f"(default for {llm_provider})"
+            ),
+            schema_fields=data.get("schema_fields", list(schema.keys())),
+            js_render=js_render,
+            content_warning=data.get("content_warning"),
+            credits_used=float(data.get("credits_used", 0.0)),
+            credits_remaining=float(data.get("credits_remaining", 0.0)),
+        )
+
+    async def extract_async(
+        self,
+        url: str,
+        *,
+        schema: dict[str, str],
+        llm_provider: str,
+        llm_api_key: str,
+        llm_model: str | None = None,
+        selector: str | None = None,
+        extract_as_list: bool = False,
+        js_render: bool = False,
+        click_selector: str | None = None,
+    ) -> ExtractResult:
+        """Async version of :meth:`extract`."""
+        payload: dict = {
+            "url": url,
+            "schema": schema,
+            "llm_provider": llm_provider,
+            "llm_api_key": llm_api_key,
+        }
+        if llm_model:
+            payload["llm_model"] = llm_model
+        if selector:
+            payload["selector"] = selector
+        if extract_as_list:
+            payload["extract_as_list"] = True
+        if js_render:
+            payload["js_render"] = True
+        if click_selector:
+            payload["click_selector"] = click_selector
+
+        data = await self._client._post_async("/v1/extract", json=payload)
+
+        extracted = data.get("extracted", {})
+        item_count = data.get("item_count")
+        if item_count is None and isinstance(extracted, list):
+            item_count = len(extracted)
+
+        return ExtractResult(
+            extracted=extracted,
+            field_count=data.get("field_count", len(schema)),
+            item_count=item_count,
+            url=url,
+            llm_provider=llm_provider,
+            llm_model=data.get(
+                "llm_model", llm_model or f"(default for {llm_provider})"
+            ),
+            schema_fields=data.get("schema_fields", list(schema.keys())),
+            js_render=js_render,
+            content_warning=data.get("content_warning"),
             credits_used=float(data.get("credits_used", 0.0)),
             credits_remaining=float(data.get("credits_remaining", 0.0)),
         )

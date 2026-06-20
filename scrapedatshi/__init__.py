@@ -9,27 +9,40 @@ Quick start::
 
     client = ScrapedatshiClient(api_key="sds_...")
 
-    # Chunk a URL to JSON (all tiers)
+    # Chunk a URL to JSON (no embedding required)
     result = client.pipeline.chunk_url("https://docs.example.com")
     for chunk in result.chunks:
         print(chunk.content)
 
-    # Full pipeline — embed + inject to vector DB (Pro/Enterprise)
+    # Full pipeline — embed + inject to vector DB
     result = client.pipeline.sync(
         url="https://docs.example.com",
         embedding_provider="openai",
         embedding_api_key="sk-...",
         vector_db="pinecone",
-        vector_db_api_key="pc-...",
-        index_name="my-docs",
+        vector_db_config={
+            "api_key": "pc-...",
+            "index_host": "https://my-index-abc123.svc.pinecone.io",
+        },
     )
 
+    # Schema extraction — extract structured data using your LLM
+    result = client.pipeline.extract(
+        url="https://example.com/products/widget",
+        schema={"title": "string — product name", "price": "number — price in USD"},
+        llm_provider="openai",
+        llm_api_key="sk-...",
+    )
+    print(result.extracted)
+
 Full documentation: https://docs.scrapedatshi.com/sdk/python
+Supported providers: from scrapedatshi.providers import EMBEDDING_PROVIDERS, VECTOR_DB_PROVIDERS, LLM_PROVIDERS
 """
 
 from scrapedatshi.client import ScrapedatshiClient
 from scrapedatshi.exceptions import (
     AuthError,
+    InsufficientCreditsError,
     RateLimitError,
     ScrapedatshiError,
     ServerError,
@@ -41,11 +54,12 @@ from scrapedatshi.models import (
     Chunk,
     ChunkResult,
     CrawlChunkResult,
+    ExtractResult,
     IngestResult,
     SyncResult,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __author__ = "scrapedatshi"
 __all__ = [
     # Client
@@ -53,6 +67,7 @@ __all__ = [
     # Exceptions
     "ScrapedatshiError",
     "AuthError",
+    "InsufficientCreditsError",
     "RateLimitError",
     "TierError",
     "ValidationError",
@@ -64,4 +79,5 @@ __all__ = [
     "CrawlChunkResult",
     "SyncResult",
     "IngestResult",
+    "ExtractResult",
 ]

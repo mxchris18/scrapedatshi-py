@@ -222,3 +222,97 @@ class IngestResult(BaseModel):
             f"chunks={self.chunks_created}, vectors={self.vectors_upserted}, "
             f"credits_used={self.credits_used:.4f})"
         )
+
+
+# ── Schema Extract response ───────────────────────────────────────────────────
+
+
+class ExtractResult(BaseModel):
+    """
+    Response from pipeline.extract() — structured data extracted from a URL using an LLM.
+
+    The ``extracted`` field contains either a single dict (default) or a list of dicts
+    when ``extract_as_list=True`` was used.
+
+    Example::
+
+        result = client.pipeline.extract(
+            url="https://example.com/products",
+            schema={"title": "string — product name", "price": "number — price in USD"},
+            llm_provider="openai",
+            llm_api_key="sk-...",
+        )
+        print(result.extracted)
+        # → {"title": "Widget Pro", "price": 29.99}
+
+        # List mode — extract all matching items on the page
+        result = client.pipeline.extract(
+            url="https://example.com/products",
+            schema={"title": "string — product name", "price": "number — price in USD"},
+            llm_provider="openai",
+            llm_api_key="sk-...",
+            extract_as_list=True,
+        )
+        print(result.extracted)
+        # → [{"title": "Widget Pro", "price": 29.99}, {"title": "Widget Lite", "price": 9.99}]
+        print(f"Extracted {result.item_count} items")
+        print(f"Cost: ${result.credits_used:.4f} | Remaining: ${result.credits_remaining:.4f}")
+    """
+
+    extracted: Any = Field(
+        ...,
+        description=(
+            "Extracted data matching your schema. "
+            "A dict when extract_as_list=False (default), "
+            "or a list[dict] when extract_as_list=True."
+        ),
+    )
+    field_count: int = Field(
+        ..., description="Number of schema fields that were defined."
+    )
+    item_count: int | None = Field(
+        None,
+        description="Number of items extracted (only set when extract_as_list=True).",
+    )
+    url: str = Field(..., description="The URL that was scraped and extracted from.")
+    llm_provider: str = Field(..., description="LLM provider used for extraction.")
+    llm_model: str = Field(..., description="LLM model used for extraction.")
+    schema_fields: list[str] = Field(
+        default_factory=list,
+        description="List of field names defined in the schema.",
+    )
+    js_render: bool = Field(
+        False, description="Whether JS rendering was used for this request."
+    )
+    content_warning: str | None = Field(
+        None,
+        description=(
+            "Warning message if the page content was thin or potentially incomplete "
+            "(e.g. JS-heavy page that may need js_render=True)."
+        ),
+    )
+    credits_used: float = Field(
+        0.0,
+        description="Credits deducted for this request (fetch fee + orchestration + per-field fee).",
+    )
+    credits_remaining: float = Field(
+        0.0,
+        description="Account credit balance after this request.",
+    )
+
+    @property
+    def is_list(self) -> bool:
+        """True if the extracted result is a list (extract_as_list mode)."""
+        return isinstance(self.extracted, list)
+
+    def __len__(self) -> int:
+        if isinstance(self.extracted, list):
+            return len(self.extracted)
+        return 1
+
+    def __repr__(self) -> str:
+        mode = f"list[{self.item_count}]" if self.is_list else "object"
+        return (
+            f"ExtractResult(url={self.url!r}, fields={self.field_count}, "
+            f"mode={mode}, credits_used={self.credits_used:.4f})"
+        )

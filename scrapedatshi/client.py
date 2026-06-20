@@ -29,7 +29,7 @@ from scrapedatshi.exceptions import (
     RateLimitError,
     ScrapedatshiError,
     ServerError,
-    TierError,
+    TierError,  # kept for backward compatibility — no longer raised by the API
     TimeoutError,
     ValidationError,
 )
@@ -222,13 +222,6 @@ def _handle_response(response: httpx.Response) -> dict[str, Any]:
         )
 
     if status in (401, 403):
-        # Distinguish tier errors from auth errors
-        if (
-            "tier" in detail.lower()
-            or "upgrade" in detail.lower()
-            or "plan" in detail.lower()
-        ):
-            raise TierError(detail, status_code=status)
         raise AuthError(detail, status_code=status)
 
     if status == 422:
