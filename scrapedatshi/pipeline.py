@@ -93,9 +93,11 @@ class PipelineNamespace:
             js_render: If True, uses a headless Chromium browser (Playwright) to
                 fully render JavaScript before scraping. Required for SPAs and
                 JS-heavy pages. Adds a surcharge per fetch.
-            contextual_retrieval: Enable RAG 2.0 contextual enrichment. Generates a
-                1-sentence document summary via your LLM and prepends it to every chunk,
-                boosting retrieval accuracy by 35–50%.
+            contextual_retrieval: Enable RAG 2.0 contextual enrichment. For each chunk,
+                an LLM generates a unique context string describing the document identity,
+                section identity, and specific entities in that chunk. This context is
+                prepended to the chunk text before embedding, boosting retrieval accuracy
+                by 35–50%. Billed at **$0.0010 per chunk** that is successfully enriched.
             llm_provider: LLM provider for contextual retrieval (e.g. ``"openai"``).
                 See :data:`scrapedatshi.providers.LLM_PROVIDERS` for supported providers.
             llm_api_key: API key for the LLM provider.
@@ -115,6 +117,21 @@ class PipelineNamespace:
             for chunk in result.chunks:
                 print(chunk.content)
             print(f"Cost: ${result.credits_used:.4f}")
+
+            # With contextual retrieval — each chunk gets unique LLM-generated context
+            result = client.pipeline.chunk_url(
+                "https://docs.example.com",
+                contextual_retrieval=True,
+                llm_provider="openai",
+                llm_api_key="sk-...",
+                llm_model="gpt-4o-mini",
+            )
+            for chunk in result.chunks:
+                print(chunk.context)        # per-chunk LLM context
+                print(chunk.original_text)  # raw text before enrichment
+                print(chunk.content)        # combined for embedding
+            if result.contextual_retrieval_error:
+                print(f"CR warning: {result.contextual_retrieval_error}")
 
             # With JS rendering for JavaScript-heavy pages
             result = client.pipeline.chunk_url(
@@ -146,6 +163,7 @@ class PipelineNamespace:
             total_chunks=data.get("chunk_count", len(data.get("chunks", []))),
             source=url,
             contextual_retrieval_used=bool(data.get("contextual_retrieval", False)),
+            contextual_retrieval_error=data.get("contextual_retrieval_error"),
             content_truncated=bool(data.get("content_truncated", False)),
             credits_used=float(data.get("credits_used", 0.0)),
             credits_remaining=float(data.get("credits_remaining", 0.0)),
@@ -189,6 +207,7 @@ class PipelineNamespace:
             total_chunks=data.get("chunk_count", len(data.get("chunks", []))),
             source=url,
             contextual_retrieval_used=bool(data.get("contextual_retrieval", False)),
+            contextual_retrieval_error=data.get("contextual_retrieval_error"),
             content_truncated=bool(data.get("content_truncated", False)),
             credits_used=float(data.get("credits_used", 0.0)),
             credits_remaining=float(data.get("credits_remaining", 0.0)),
@@ -265,6 +284,7 @@ class PipelineNamespace:
             total_chunks=data.get("total_chunks", len(all_chunks)),
             source=path.name,
             contextual_retrieval_used=bool(data.get("contextual_retrieval", False)),
+            contextual_retrieval_error=data.get("contextual_retrieval_error"),
             content_truncated=False,
             credits_used=float(data.get("credits_used", 0.0)),
             credits_remaining=float(data.get("credits_remaining", 0.0)),
@@ -315,6 +335,7 @@ class PipelineNamespace:
             total_chunks=data.get("total_chunks", len(all_chunks)),
             source=path.name,
             contextual_retrieval_used=bool(data.get("contextual_retrieval", False)),
+            contextual_retrieval_error=data.get("contextual_retrieval_error"),
             content_truncated=False,
             credits_used=float(data.get("credits_used", 0.0)),
             credits_remaining=float(data.get("credits_remaining", 0.0)),
@@ -419,6 +440,7 @@ class PipelineNamespace:
             pages_crawled=data.get("pages_crawled", 0),
             source_url=url,
             contextual_retrieval_used=bool(data.get("contextual_retrieval", False)),
+            contextual_retrieval_error=data.get("contextual_retrieval_error"),
             credits_used=float(data.get("credits_used", 0.0)),
             credits_remaining=float(data.get("credits_remaining", 0.0)),
         )
@@ -472,6 +494,7 @@ class PipelineNamespace:
             pages_crawled=data.get("pages_crawled", 0),
             source_url=url,
             contextual_retrieval_used=bool(data.get("contextual_retrieval", False)),
+            contextual_retrieval_error=data.get("contextual_retrieval_error"),
             credits_used=float(data.get("credits_used", 0.0)),
             credits_remaining=float(data.get("credits_remaining", 0.0)),
         )
@@ -487,6 +510,7 @@ class PipelineNamespace:
         vector_db: str,
         vector_db_config: dict,
         embedding_model: str | None = None,
+        embedding_endpoint: str | None = None,
         selector: str | None = None,
         chunk_size: int = 512,
         overlap: int = 50,
@@ -504,6 +528,7 @@ class PipelineNamespace:
             embedding_provider: Embedding provider key (e.g. ``"openai"``).
                 See :data:`scrapedatshi.providers.EMBEDDING_PROVIDERS` for all options.
             embedding_api_key: API key for the embedding provider.
+                Pass an empty string ``""`` for Ollama (no key required).
             vector_db: Vector DB provider key (e.g. ``"pinecone"``).
                 See :data:`scrapedatshi.providers.VECTOR_DB_PROVIDERS` for all options.
             vector_db_config: Provider-specific configuration dict. Required fields
@@ -521,7 +546,11 @@ class PipelineNamespace:
 
                     vector_db_config={"connection_string": "postgresql://...", "table_name": "documents"}
 
-            embedding_model: Optional model override (e.g. ``"text-embedding-3-small"``).
+            embedding_model: Model name for the embedding provider. Required for all
+                providers. Check your provider's documentation for available models.
+            embedding_endpoint: Public endpoint URL for local embedding providers
+                (Ollama only). Must be a publicly accessible HTTPS URL — use ngrok
+                to expose your local Ollama instance: ``ngrok http 11434``.
             selector: Optional CSS selector to target a specific element.
             chunk_size: Target token count per chunk (default: 512).
             overlap: Token overlap between consecutive chunks (default: 50).
@@ -530,7 +559,9 @@ class PipelineNamespace:
             contextual_retrieval: Enable RAG 2.0 contextual enrichment.
             llm_provider: LLM provider for contextual retrieval.
             llm_api_key: API key for the LLM provider.
-            llm_model: Model name.
+            llm_model: Model name for the LLM provider. Required when
+                ``contextual_retrieval=True``. Check your provider's documentation
+                for available models.
 
         Returns:
             :class:`~scrapedatshi.models.SyncResult`
@@ -556,6 +587,8 @@ class PipelineNamespace:
         embedding: dict = {"provider": embedding_provider, "api_key": embedding_api_key}
         if embedding_model:
             embedding["model"] = embedding_model
+        if embedding_endpoint:
+            embedding["endpoint"] = embedding_endpoint
 
         vdb: dict = {"provider": vector_db, **vector_db_config}
 
@@ -588,6 +621,7 @@ class PipelineNamespace:
             embedding_provider=embedding_provider,
             vector_db_provider=vector_db,
             contextual_retrieval_used=bool(data.get("contextual_retrieval", False)),
+            contextual_retrieval_error=data.get("contextual_retrieval_error"),
             credits_used=float(data.get("credits_used", 0.0)),
             credits_remaining=float(data.get("credits_remaining", 0.0)),
         )
@@ -601,6 +635,7 @@ class PipelineNamespace:
         vector_db: str,
         vector_db_config: dict,
         embedding_model: str | None = None,
+        embedding_endpoint: str | None = None,
         selector: str | None = None,
         chunk_size: int = 512,
         overlap: int = 50,
@@ -614,6 +649,8 @@ class PipelineNamespace:
         embedding: dict = {"provider": embedding_provider, "api_key": embedding_api_key}
         if embedding_model:
             embedding["model"] = embedding_model
+        if embedding_endpoint:
+            embedding["endpoint"] = embedding_endpoint
 
         vdb: dict = {"provider": vector_db, **vector_db_config}
 
@@ -646,6 +683,7 @@ class PipelineNamespace:
             embedding_provider=embedding_provider,
             vector_db_provider=vector_db,
             contextual_retrieval_used=bool(data.get("contextual_retrieval", False)),
+            contextual_retrieval_error=data.get("contextual_retrieval_error"),
             credits_used=float(data.get("credits_used", 0.0)),
             credits_remaining=float(data.get("credits_remaining", 0.0)),
         )
@@ -661,6 +699,7 @@ class PipelineNamespace:
         vector_db: str,
         vector_db_config: dict,
         embedding_model: str | None = None,
+        embedding_endpoint: str | None = None,
         chunk_size: int = 512,
         overlap: int = 50,
         contextual_retrieval: bool = False,
@@ -677,17 +716,24 @@ class PipelineNamespace:
             embedding_provider: Embedding provider key (e.g. ``"openai"``).
                 See :data:`scrapedatshi.providers.EMBEDDING_PROVIDERS` for all options.
             embedding_api_key: API key for the embedding provider.
+                Pass an empty string ``""`` for Ollama (no key required).
             vector_db: Vector DB provider key (e.g. ``"pinecone"``).
                 See :data:`scrapedatshi.providers.VECTOR_DB_PROVIDERS` for all options.
             vector_db_config: Provider-specific configuration dict.
                 See :meth:`sync` for examples.
-            embedding_model: Optional model override.
+            embedding_model: Model name for the embedding provider. Required for all
+                providers. Check your provider's documentation for available models.
+            embedding_endpoint: Public endpoint URL for local embedding providers
+                (Ollama only). Must be a publicly accessible HTTPS URL — use ngrok
+                to expose your local Ollama instance: ``ngrok http 11434``.
             chunk_size: Target token count per chunk (default: 512).
             overlap: Token overlap between consecutive chunks (default: 50).
             contextual_retrieval: Enable RAG 2.0 contextual enrichment.
             llm_provider: LLM provider for contextual retrieval.
             llm_api_key: API key for the LLM provider.
-            llm_model: Model name.
+            llm_model: Model name for the LLM provider. Required when
+                ``contextual_retrieval=True``. Check your provider's documentation
+                for available models.
 
         Returns:
             :class:`~scrapedatshi.models.IngestResult`
@@ -716,6 +762,8 @@ class PipelineNamespace:
         embedding_cfg = {"provider": embedding_provider, "api_key": embedding_api_key}
         if embedding_model:
             embedding_cfg["model"] = embedding_model
+        if embedding_endpoint:
+            embedding_cfg["endpoint"] = embedding_endpoint
 
         vdb_cfg = {"provider": vector_db, **vector_db_config}
 
@@ -751,6 +799,7 @@ class PipelineNamespace:
             vector_db_provider=vector_db,
             filename=path.name,
             contextual_retrieval_used=bool(contextual_retrieval),
+            contextual_retrieval_error=data.get("contextual_retrieval_error"),
             credits_used=float(data.get("credits_used", 0.0)),
             credits_remaining=float(data.get("credits_remaining", 0.0)),
         )
@@ -764,6 +813,7 @@ class PipelineNamespace:
         vector_db: str,
         vector_db_config: dict,
         embedding_model: str | None = None,
+        embedding_endpoint: str | None = None,
         chunk_size: int = 512,
         overlap: int = 50,
         contextual_retrieval: bool = False,
@@ -778,6 +828,8 @@ class PipelineNamespace:
         embedding_cfg = {"provider": embedding_provider, "api_key": embedding_api_key}
         if embedding_model:
             embedding_cfg["model"] = embedding_model
+        if embedding_endpoint:
+            embedding_cfg["endpoint"] = embedding_endpoint
 
         vdb_cfg = {"provider": vector_db, **vector_db_config}
 
@@ -815,6 +867,7 @@ class PipelineNamespace:
             vector_db_provider=vector_db,
             filename=path.name,
             contextual_retrieval_used=bool(contextual_retrieval),
+            contextual_retrieval_error=data.get("contextual_retrieval_error"),
             credits_used=float(data.get("credits_used", 0.0)),
             credits_remaining=float(data.get("credits_remaining", 0.0)),
         )

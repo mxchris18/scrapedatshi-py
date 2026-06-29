@@ -26,6 +26,13 @@ class Chunk(BaseModel):
     This model maps that field to the public ``content`` attribute via an
     alias so existing user code (``chunk.content``) continues to work
     without any changes.
+
+    When ``contextual_retrieval=True`` is used, two additional fields are
+    populated:
+
+    - ``original_text``: the raw chunk text before enrichment
+    - ``context``: the LLM-generated per-chunk context string
+    - ``content`` (``text``): the combined string ``"Context: {context}\\n\\n{original_text}"``
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -33,10 +40,25 @@ class Chunk(BaseModel):
     content: str = Field(
         ...,
         alias="text",
-        description="The chunk text content (server field: ``text``).",
+        description="The chunk text content (server field: ``text``). When contextual_retrieval=True, this is the combined 'Context: ...\\n\\n{original_text}' string.",
     )
     token_estimate: int = Field(
         ..., description="Estimated token count for this chunk."
+    )
+    original_text: str | None = Field(
+        None,
+        description=(
+            "The raw chunk text before contextual enrichment. "
+            "Only set when contextual_retrieval=True and CR succeeded for this chunk."
+        ),
+    )
+    context: str | None = Field(
+        None,
+        description=(
+            "The LLM-generated per-chunk context string prepended before embedding. "
+            "Includes document identity, section identity, and specific entities. "
+            "Only set when contextual_retrieval=True and CR succeeded for this chunk."
+        ),
     )
     metadata: dict[str, Any] = Field(
         default_factory=dict,
@@ -76,6 +98,13 @@ class ChunkResult(BaseModel):
     contextual_retrieval_used: bool = Field(
         False,
         description="Whether Contextual Retrieval (RAG 2.0) was applied to enrich chunks.",
+    )
+    contextual_retrieval_error: str | None = Field(
+        None,
+        description=(
+            "Error message if contextual retrieval failed (e.g. invalid LLM key or unsupported model). "
+            "Chunks are still returned without context enrichment when this is set."
+        ),
     )
     content_truncated: bool = Field(
         False,
@@ -121,6 +150,13 @@ class CrawlChunkResult(BaseModel):
         ..., description="The root URL or sitemap URL that was crawled."
     )
     contextual_retrieval_used: bool = Field(False)
+    contextual_retrieval_error: str | None = Field(
+        None,
+        description=(
+            "Error message if contextual retrieval failed (e.g. invalid LLM key or unsupported model). "
+            "Chunks are still returned without context enrichment when this is set."
+        ),
+    )
     credits_used: float = Field(
         0.0,
         description="Credits deducted for this request (URL fetch fees + chunk fees).",
@@ -177,6 +213,13 @@ class SyncResult(BaseModel):
         ..., description="Vector DB provider used (e.g. 'pinecone')."
     )
     contextual_retrieval_used: bool = Field(False)
+    contextual_retrieval_error: str | None = Field(
+        None,
+        description=(
+            "Error message if contextual retrieval failed (e.g. invalid LLM key or unsupported model). "
+            "Vectors are still upserted without context enrichment when this is set."
+        ),
+    )
     credits_used: float = Field(
         0.0,
         description="Credits deducted for this request (URL fetch + chunk fees + injection fees).",
@@ -219,6 +262,13 @@ class IngestResult(BaseModel):
     vector_db_provider: str
     filename: str = Field("", description="Original filename that was ingested.")
     contextual_retrieval_used: bool = Field(False)
+    contextual_retrieval_error: str | None = Field(
+        None,
+        description=(
+            "Error message if contextual retrieval failed (e.g. invalid LLM key or unsupported model). "
+            "Vectors are still upserted without context enrichment when this is set."
+        ),
+    )
     credits_used: float = Field(
         0.0,
         description="Credits deducted for this request (file parse + chunk fees + injection fees).",

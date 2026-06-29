@@ -66,7 +66,7 @@ Credits are deducted after each successful API call. Failed requests are never c
 | Spider Fetch | $0.0050 / URL | /v1/spider (replaces standard URL fetch) |
 | Chunk Fee | $0.0005 / chunk | All routes (per individual chunk generated) |
 | Injection Fee | $0.0030 / chunk | /v1/sync, /v1/ingest (vector DB upserts) |
-| Contextual Retrieval | $0.0030 / URL | When `contextual_retrieval=True` is enabled |
+| Contextual Retrieval | $0.0010 / chunk | When `contextual_retrieval=True` is enabled (per successfully enriched chunk) |
 | JS Render | $0.0050 / URL | When `js_render=True` (Playwright processing) |
 | Schema Extract | $0.0030 + ($0.0001 × field) | /v1/extract baseline processing |
 
@@ -239,7 +239,9 @@ result = client.pipeline.extract(
 
 ### Contextual Retrieval (RAG 2.0)
 
-Prepend an LLM-generated document summary to every chunk before embedding, dramatically improving retrieval accuracy.
+For each chunk, an LLM generates a unique context string describing the document identity, section identity, and specific entities in that chunk. This context is prepended to the chunk text before embedding, boosting retrieval accuracy by 35–50%.
+
+**Pricing:** `$0.0010` per chunk successfully enriched (only charged for chunks where CR succeeded).
 
 ```python
 result = client.pipeline.chunk_url(
@@ -249,6 +251,16 @@ result = client.pipeline.chunk_url(
     llm_api_key="sk-...",
     llm_model="gpt-4o-mini",
 )
+
+# Each chunk now has per-chunk context fields
+for chunk in result.chunks:
+    print(chunk.context)        # LLM-generated context for this specific chunk
+    print(chunk.original_text)  # Raw chunk text before enrichment
+    print(chunk.content)        # Combined: "Context: ...\n\n{original_text}"
+
+# Check if CR partially failed (chunks still returned without context)
+if result.contextual_retrieval_error:
+    print(f"CR warning: {result.contextual_retrieval_error}")
 ```
 
 Available on all pipeline methods: `chunk_url()`, `chunk_file()`, `crawl()`, `sync()`, `ingest()`.
@@ -268,48 +280,135 @@ from scrapedatshi.providers import (
 
 # List all embedding providers
 for key, info in EMBEDDING_PROVIDERS.items():
-    print(f"{key}: {info['label']} — default model: {info['default_model']}")
+    print(f"{key}: {info['label']} (requires_api_key={info['requires_api_key']})")
     print(f"  {info['notes']}")
-# → openai: OpenAI — default model: text-embedding-3-small
 
 # Check required fields for a vector DB
 print(VECTOR_DB_PROVIDERS["pinecone"]["required_fields"])
 # → ["api_key", "index_host"]
+
+# List LLM providers (for CR and schema extraction)
+for key, info in LLM_PROVIDERS.items():
+    print(f"{key}: {info['label']}")
+    print(f"  {info['notes']}")
 ```
 
 ### Embedding Providers
 
-| Key | Provider | Default Model | Notes |
-|---|---|---|---|
-| `openai` | OpenAI | `text-embedding-3-small` | 1536 dims. Also: `text-embedding-3-large` (3072), `text-embedding-ada-002` (1536) |
-| `cohere` | Cohere | `embed-english-v3.0` | 1024 dims. Also: `embed-multilingual-v3.0`, `embed-english-light-v3.0` (384) |
-| `gemini` | Google Gemini | `gemini-embedding-001` | 3072 dims. Also: `text-embedding-004` (768) |
-| `mistral` | Mistral | `mistral-embed` | 1024 dims |
-| `voyage` | Voyage AI | `voyage-3` | 1024 dims. Also: `voyage-3-lite` (512), `voyage-code-3`, `voyage-finance-2`, `voyage-law-2` |
+**Embedding providers** use embedding-specific models to convert text into vectors. Check your provider's documentation for available models.
 
-Models are discovered dynamically after key verification — you always get the latest available models for your account.
+| Key | Provider | API Key Required | Notes |
+|---|---|---|---|
+| `openai` | OpenAI | Yes | Common models: `text-embedding-3-small` (1536 dims), `text-embedding-3-large` (3072 dims) |
+| `cohere` | Cohere | Yes | Common models: `embed-english-v3.0` (1024 dims), `embed-multilingual-v3.0` (1024 dims) |
+| `gemini` | Google Gemini | Yes | Common models: `gemini-embedding-001` (3072 dims), `text-embedding-004` (768 dims) |
+| `mistral` | Mistral | Yes | Model: `mistral-embed` (1024 dims) |
+| `voyage` | Voyage AI | Yes | Models: `voyage-3` (1024 dims), `voyage-3-lite` (512 dims), `voyage-code-3`, `voyage-finance-2`, `voyage-law-2` |
+| `ollama` | Ollama (Local) | No | Requires ngrok — see [Local Providers](#local-providers) below |
 
 ### Vector Database Providers
 
-| Key | Provider | Required Fields |
-|---|---|---|
-| `pinecone` | Pinecone | `api_key`, `index_host` |
-| `qdrant` | Qdrant | `url`, `collection_name` |
-| `supabase` | Supabase (pgvector) | `connection_string`, `table_name` |
-| `weaviate` | Weaviate | `url`, `class_name` |
-| `mongodb` | MongoDB Atlas | `connection_string`, `database_name`, `collection_name` |
-| `azure_cosmos` | Azure Cosmos DB (NoSQL) | `connection_string`, `database_name`, `container_name` |
-| `azure_cosmos_mongo` | Azure Cosmos DB (MongoDB API) | `connection_string`, `database_name`, `collection_name` |
+| Key | Provider | Required Fields | Local |
+|---|---|---|---|
+| `pinecone` | Pinecone | `api_key`, `index_host` | No |
+| `qdrant` | Qdrant | `url`, `collection_name` | No |
+| `supabase` | Supabase (pgvector) | `connection_string`, `table_name` | No |
+| `weaviate` | Weaviate | `url`, `class_name` | No |
+| `mongodb` | MongoDB Atlas | `connection_string`, `database_name`, `collection_name` | No |
+| `azure_cosmos` | Azure Cosmos DB (NoSQL) | `connection_string`, `database_name`, `container_name` | No |
+| `azure_cosmos_mongo` | Azure Cosmos DB (MongoDB API) | `connection_string`, `database_name`, `collection_name` | No |
+| `chroma` | ChromaDB (Local) | `collection_name` | Yes |
+| `lancedb` | LanceDB (Local) | `db_path`, `table_name` | Yes |
 
 ### LLM Providers (for Contextual Retrieval & Schema Extraction)
 
-| Key | Provider | Default Model | Context Window |
-|---|---|---|---|
-| `openai` | OpenAI | `gpt-4o-mini` | Standard (mini, etc.): 8k chars · Advanced (gpt-4o, etc.): 30k chars |
-| `anthropic` | Anthropic | `claude-3-haiku-20240307` | Standard (haiku): 8k chars · Advanced (sonnet, opus): 30k chars |
-| `gemini` | Google Gemini | `gemini-1.5-flash` | Standard (flash, lite, nano): 8k chars · Advanced (pro, etc.): 30k chars |
+**LLM providers** use chat/completion models — different from embedding models. A model name is always required; no default is applied. Check your provider's documentation for models available on your API key.
 
-**Model tiers:** The API automatically selects the context window based on the model name. Standard models (containing "mini", "flash", "haiku", "lite", or "nano") use an 8,000 character context window. All other models are treated as Advanced and use a 30,000 character context window. Use an advanced model for long-form pages (documentation, legal docs, research papers).
+| Key | Provider | Context Window |
+|---|---|---|
+| `openai` | OpenAI | Standard models (mini, etc.): 8k chars · Advanced (gpt-4o, etc.): 30k chars |
+| `anthropic` | Anthropic | Standard models (haiku): 8k chars · Advanced (sonnet, opus): 30k chars |
+| `gemini` | Google Gemini | Standard models (flash, lite, nano): 8k chars · Advanced (pro, etc.): 30k chars |
+
+**Model tiers:** Standard models (names containing "mini", "flash", "haiku", "lite", or "nano") use an 8,000 character context window. All other models use a 30,000 character context window. Use an advanced model for long-form pages (documentation, legal docs, research papers).
+
+---
+
+## Local Providers
+
+### Ollama (Local Embedding)
+
+Ollama lets you run embedding models locally — no API key required. Because the scrapedatshi API server needs to reach your Ollama instance, you must expose it publicly using [ngrok](https://ngrok.com) (or a similar tunnel) before use.
+
+**Setup:**
+
+```bash
+# 1. Start Ollama and pull an embedding model
+ollama pull nomic-embed-text
+
+# 2. Expose it publicly with ngrok
+ngrok http 11434
+# → Forwarding: https://abc123.ngrok-free.app → localhost:11434
+```
+
+**Usage:**
+
+```python
+result = client.pipeline.sync(
+    url="https://docs.example.com",
+    embedding_provider="ollama",
+    embedding_api_key="",                          # no key required
+    embedding_model="nomic-embed-text",
+    embedding_endpoint="https://abc123.ngrok-free.app",  # your ngrok URL
+    vector_db="chroma",
+    vector_db_config={"collection_name": "docs"},
+)
+```
+
+> **Important:** The `embedding_endpoint` must be the public ngrok HTTPS URL, not `localhost`. The API server cannot reach your local machine directly.
+
+### ChromaDB (Local Vector DB)
+
+ChromaDB stores vectors as files on your local machine. The ChromaDB HTTP server must be running before you call the API.
+
+```bash
+pip install chromadb
+chroma run --path ./chroma_data
+# → ChromaDB running at http://localhost:8000
+```
+
+```python
+result = client.pipeline.sync(
+    url="https://docs.example.com",
+    embedding_provider="openai",
+    embedding_api_key="sk-...",
+    embedding_model="text-embedding-3-small",
+    vector_db="chroma",
+    vector_db_config={
+        "collection_name": "my_docs",
+        "host": "localhost",   # optional, default: localhost
+        "port": 8000,          # optional, default: 8000
+    },
+)
+```
+
+### LanceDB (Local Vector DB)
+
+LanceDB stores vectors as files on your local filesystem — no server required.
+
+```python
+result = client.pipeline.sync(
+    url="https://docs.example.com",
+    embedding_provider="openai",
+    embedding_api_key="sk-...",
+    embedding_model="text-embedding-3-small",
+    vector_db="lancedb",
+    vector_db_config={
+        "db_path": "./lancedb",      # local directory path
+        "table_name": "documents",
+    },
+)
+```
 
 ---
 
@@ -369,8 +468,10 @@ result.credits_remaining       # float — account balance after this request
 ### `Chunk`
 
 ```python
-chunk.content              # str — the chunk text
+chunk.content              # str — the chunk text (combined "Context: ...\n\n{original_text}" when CR used)
 chunk.token_estimate       # int — estimated token count
+chunk.original_text        # str | None — raw text before CR enrichment (only set when CR succeeded)
+chunk.context              # str | None — LLM-generated per-chunk context (only set when CR succeeded)
 chunk.metadata             # dict — source URL, page number, etc.
 ```
 
